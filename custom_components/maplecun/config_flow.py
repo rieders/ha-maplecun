@@ -41,6 +41,7 @@ from .const import (
     KIND_IT,
     KIND_METER,
     KIND_REVOLT,
+    KIND_SENSOR,
     MODULE_IDS,
     ROLE_OFF,
     ROLES,
@@ -216,12 +217,14 @@ class MapleCunOptionsFlow(OptionsFlow):
                 KIND_REVOLT: user_input["auto_revolt"],
                 KIND_IT: user_input["auto_it"],
                 KIND_METER: user_input["auto_meter"],
+                KIND_SENSOR: user_input["auto_sensor"],
             }})
         hub = self._hub()
         schema = vol.Schema(
             {
                 vol.Required("auto_revolt", default=auto[KIND_REVOLT]): bool,
                 vol.Required("auto_it", default=auto[KIND_IT]): bool,
+                vol.Required("auto_sensor", default=auto[KIND_SENSOR]): bool,
                 vol.Required("auto_meter", default=auto[KIND_METER]): bool,
                 vol.Optional("reset_ignored", default=False): bool,
             }

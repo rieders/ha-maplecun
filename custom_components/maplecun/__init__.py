@@ -20,6 +20,7 @@ from .const import (
     CONF_NAME,
     CONF_REVOLTS,
     CONF_ROLE,
+    CONF_SENSORS,
     DEFAULT_MODULES,
     DOMAIN,
     ROLE_OFF,
@@ -99,6 +100,7 @@ async def async_remove_config_entry_device(
         f"{entry.entry_id}_meter_": CONF_METERS,
         f"{entry.entry_id}_revolt_": CONF_REVOLTS,
         f"{entry.entry_id}_it_": CONF_IT_DEVICES,
+        f"{entry.entry_id}_climate_": CONF_SENSORS,
     }
     for domain, ident in device.identifiers:
         if domain != DOMAIN:

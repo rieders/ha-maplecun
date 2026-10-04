@@ -13,7 +13,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from . import intertechno, revolt, wmbus
+from . import climate433, intertechno, revolt, wmbus
 from .const import (
     CONF_AUTO,
     CONF_INIT,
@@ -24,8 +24,10 @@ from .const import (
     CONF_NAME,
     CONF_OFF,
     CONF_ON,
+    CONF_MODEL,
     CONF_REVOLTS,
     CONF_ROLE,
+    CONF_SENSORS,
     DEFAULT_AUTO,
     DEFAULT_IT_OFF,
     DEFAULT_IT_ON,
@@ -33,6 +35,7 @@ from .const import (
     KIND_IT,
     KIND_METER,
     KIND_REVOLT,
+    KIND_SENSOR,
     RECONNECT_DELAY,
     ROLE_INIT,
     ROLE_OFF,
@@ -40,12 +43,14 @@ from .const import (
     SEEN_MAX,
     STORAGE_VERSION,
     WMBUS_ROLES,
+    signal_climate,
     signal_connection,
     signal_discovered,
     signal_it,
     signal_meter,
     signal_meter_new,
     signal_raw,
+    signal_rx,
     signal_revolt,
     signal_seen,
 )
@@ -61,6 +66,10 @@ class Module:
     port: int
     role: str
     connected: bool = False
+    last_rx: object = None            # datetime des letzten Telegramms
+    rx_count: int = 0                 # Zeilen seit Mitternacht
+    rx_day: int = 0
+    rx_notified: float = 0.0
     writer: asyncio.StreamWriter | None = None
     task: asyncio.Task | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -89,6 +98,7 @@ class MapleCunHub:
         }
         self.revolts: set[str] = set(opts.get(CONF_REVOLTS, {}))
         self.it_codes: set[str] = set(opts.get(CONF_IT_DEVICES, {}))
+        self.climate: set[str] = set(opts.get(CONF_SENSORS, {}))
 
         # Laufzeitdaten (gespeichert)
         self.meter_keys: dict[str, list[str]] = {}
@@ -181,6 +191,7 @@ class MapleCunHub:
                         raise ConnectionError("Verbindung vom Gegenüber geschlossen")
                     line = raw.decode(errors="replace").strip()
                     if line:
+                        self._note_rx(mod)
                         try:
                             self._handle_line(mod, line)
                         except Exception:  # noqa: BLE001
@@ -192,6 +203,19 @@ class MapleCunHub:
                 _LOGGER.log(level, "Modul %s (Port %s): %s", mod.module_id, mod.port, err)
             await self._close(mod)
             await asyncio.sleep(RECONNECT_DELAY)
+
+    @callback
+    def _note_rx(self, mod: Module) -> None:
+        """Empfangsstatistik je Modul; Entitäten höchstens einmal pro Minute aktualisieren."""
+        now = dt_util.now()
+        if now.toordinal() != mod.rx_day:
+            mod.rx_day, mod.rx_count = now.toordinal(), 0
+        mod.rx_count += 1
+        first = mod.last_rx is None
+        mod.last_rx = now
+        if first or time.monotonic() - mod.rx_notified > 60:
+            mod.rx_notified = time.monotonic()
+            async_dispatcher_send(self.hass, signal_rx(self.entry_id))
 
     async def async_send(self, module_id: str, command: str) -> None:
         mod = self.modules.get(module_id)
@@ -209,6 +233,7 @@ class MapleCunHub:
             (kind == KIND_METER and ident in self.meters)
             or (kind == KIND_REVOLT and ident in self.revolts)
             or (kind == KIND_IT and ident in self.it_codes)
+            or (kind == KIND_SENSOR and ident in self.climate)
         )
 
     @callback
@@ -263,6 +288,9 @@ class MapleCunHub:
             return f"Intertechno {ident} (zuletzt Befehl {info.get('cmd', '?')})"
         if kind == KIND_REVOLT:
             return f"Revolt {ident} – {info.get('power', '?')} W"
+        if kind == KIND_SENSOR:
+            hum = f", {info['humidity']} %" if info.get("humidity") is not None else ""
+            return f"Thermometer {info.get('model', '?')} {ident.split('_', 1)[-1]} – {info.get('temperature')} °C{hum}{rssi}"
         return key
 
     def adopt_options(self, keys: list[str]) -> dict:
@@ -271,6 +299,7 @@ class MapleCunHub:
         meters = dict(opts.get(CONF_METERS, {}))
         revolts = dict(opts.get(CONF_REVOLTS, {}))
         its = dict(opts.get(CONF_IT_DEVICES, {}))
+        sensors = dict(opts.get(CONF_SENSORS, {}))
         for key in keys:
             kind, _, ident = key.partition(":")
             info = self.discovered.pop(key, {})
@@ -282,9 +311,11 @@ class MapleCunHub:
                 its.setdefault(
                     ident, {CONF_NAME: f"Intertechno {ident}", CONF_ON: DEFAULT_IT_ON, CONF_OFF: DEFAULT_IT_OFF}
                 )
+            elif kind == KIND_SENSOR:
+                sensors.setdefault(ident, {CONF_NAME: f"Thermometer {ident}", CONF_MODEL: info.get("model", "")})
         self._save_later(1)
         self._update_notification()
-        return {**opts, CONF_METERS: meters, CONF_REVOLTS: revolts, CONF_IT_DEVICES: its}
+        return {**opts, CONF_METERS: meters, CONF_REVOLTS: revolts, CONF_IT_DEVICES: its, CONF_SENSORS: sensors}
 
     async def async_adopt(self, keys: list[str]) -> None:
         """Automatisch übernehmen (Integration lädt danach neu)."""
@@ -294,7 +325,7 @@ class MapleCunHub:
 
     def discovered_sorted(self) -> list[str]:
         """Steckdosen, Revolts, dann Zähler nach Signalstärke (nahe zuerst)."""
-        order = {KIND_IT: 0, KIND_REVOLT: 1, KIND_METER: 2}
+        order = {KIND_IT: 0, KIND_SENSOR: 1, KIND_REVOLT: 2, KIND_METER: 3}
 
         def sort_key(k: str):
             info = self.discovered[k]
@@ -327,6 +358,9 @@ class MapleCunHub:
                 return
             if (it := intertechno.decode(line)) is not None:
                 self._handle_it(*it)
+                return
+            if (reading := climate433.decode(line)) is not None:
+                self._handle_climate(reading)
                 return
         if line in ("OFF", "CMODE", "TMODE", "SMODE") or line.startswith("V "):
             return
@@ -405,6 +439,16 @@ class MapleCunHub:
             async_dispatcher_send(self.hass, signal_it(self.entry_id, code), cmd)
         else:
             self._discover(KIND_IT, code, {"cmd": cmd})
+
+    # --- Temperatur-/Feuchtesensoren
+    @callback
+    def _handle_climate(self, r: climate433.ClimateReading) -> None:
+        values = {"temperature": r.temperature, "humidity": r.humidity,
+                  "battery_low": r.battery_low, "rssi": r.rssi}
+        if r.key not in self.climate:
+            self._discover(KIND_SENSOR, r.key, {"model": r.model, **values})
+            return
+        async_dispatcher_send(self.hass, signal_climate(self.entry_id, r.key), values)
 
     # ------------------------------------------------------------------ Aufräumen
     async def async_forget_meter(self, meter_id: str) -> None:

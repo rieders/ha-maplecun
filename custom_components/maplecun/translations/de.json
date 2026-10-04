@@ -125,7 +125,8 @@
           "auto_revolt": "Revolt-Energiemesser",
           "auto_it": "Intertechno-Steckdosen/Fernbedienungen",
           "auto_meter": "Wireless-M-Bus-Zähler (Vorsicht: auch die der Nachbarn)",
-          "reset_ignored": "Ignorierte Geräte wieder anzeigen"
+          "reset_ignored": "Ignorierte Geräte wieder anzeigen",
+          "auto_sensor": "433-MHz-Thermometer (Vorsicht: auch die der Nachbarn)"
         }
       },
       "edit_meter": {
@@ -236,6 +237,18 @@
       },
       "external_temperature": {
         "name": "Außentemperatur"
+      },
+      "temperature": {
+        "name": "Temperatur"
+      },
+      "humidity": {
+        "name": "Luftfeuchte"
+      },
+      "last_rx": {
+        "name": "Letzter Empfang Modul {module}"
+      },
+      "rx_today": {
+        "name": "Empfangen heute Modul {module}"
       }
     }
   }

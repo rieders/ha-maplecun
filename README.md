@@ -5,10 +5,10 @@ Custom Integration, die alle Funkmodule eines **[MapleCUN](https://wiki.fhem.de/
 | Aufgabe eines Moduls | Geräte in Home Assistant |
 |---|---|
 | **Wireless M-Bus C / T / S** | Wasser-, Wärme-, Gaszähler, Heizkostenverteiler (OMS): Zählerstand, Stichtagswert, Stichtag, Signalstärke … – auch über Repeater empfangene und AES-verschlüsselte Zähler (Modus 5) |
-| **433 MHz** | Revolt NC-5462 Energiemesser (automatisch erkannt), Intertechno-Steckdosen (Tristate) |
+| **433 MHz** | Revolt NC-5462 Energiemesser, Intertechno-Steckdosen (Tristate), Thermometer (Mebus, GT-WT-02, KW9010, NX7674) |
 | **Nur überwachen** | z. B. ein HomeMatic-/MAX!-Modul, das weiter von FHEM bedient wird – nur Verbindungsstatus |
 
-Jedes Modul bekommt einen Verbindungs-Sensor, dazu gibt es einen Diagnose-Sensor **„Empfangene Zähler“** mit allen gehörten Wireless-M-Bus-IDs.
+Jedes Modul bekommt Diagnose-Sensoren für Verbindung, **letzten Empfang** und **Telegramme heute**; dazu **„Empfangene Zähler“** mit allen gehörten Wireless-M-Bus-IDs.
 
 ## Voraussetzung: maplecun-splitproxy
 
@@ -63,6 +63,11 @@ Der MapleCUN hört alles in Funkreichweite – Zähler, Fernbedienungen und Ener
 
 Viele Zähler senden nur wenige Male am Tag – Geduld. Die Sensoren (Zählerstand, Stichtagswert, Stichtag, Signalstärke …) entstehen beim ersten Telegramm nach der Übernahme; Zählerstände eignen sich direkt für das **Energie-Dashboard**.
 Name und AES-Schlüssel (verschlüsselte Zähler) unter **Konfigurieren → Zähler bearbeiten**. Die Zähler-ID steht auf dem Gerät bzw. in FHEM im Namen: `WMBUS_LSE_52143909_26_7` → `52143909`.
+
+### Thermometer (433 MHz)
+
+Unterstützt werden Protokolle mit Prüfsumme (aus FHEM `14_CUL_TCM97001.pm` portiert): **Mebus** (u. a. Hama), **GT-WT-02 / Type1** (Temperatur + Feuchte), **KW9010** (Tchibo/TFA, Temperatur + Feuchte) und **NX7674** (Rosenstein & Söhne Kühlschrank-Thermometer).
+Gefundene Thermometer erscheinen unter *Gefundene Geräte* mit aktueller Temperatur – so lässt sich das eigene leicht erkennen. Viele Thermometer bekommen nach einem Batteriewechsel eine neue Kennung und müssen dann neu übernommen werden.
 
 ### Intertechno
 

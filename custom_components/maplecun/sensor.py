@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime
 import re
+import time
 
 from homeassistant.components.sensor import (
     RestoreSensor,
@@ -20,6 +21,7 @@ from homeassistant.const import (
     UnitOfElectricPotential,
     UnitOfEnergy,
     UnitOfFrequency,
+    PERCENTAGE,
     UnitOfPower,
     UnitOfTemperature,
     UnitOfVolume,
@@ -35,15 +37,19 @@ from homeassistant.util import dt as dt_util
 from . import MapleCunConfigEntry
 from .const import (
     CONF_METERS,
+    CONF_MODEL,
     CONF_NAME,
     CONF_REVOLTS,
+    CONF_SENSORS,
     DOMAIN,
     ROLE_RF433,
     WMBUS_ROLES,
+    signal_climate,
     signal_connection,
     signal_meter,
     signal_meter_new,
     signal_raw,
+    signal_rx,
     signal_revolt,
     signal_seen,
 )
@@ -179,14 +185,18 @@ async def async_setup_entry(
 
     # Geräte entfernter Zähler aufräumen
     dev_reg = dr.async_get(hass)
-    wanted = {f"{entry.entry_id}_meter_{mid}" for mid in hub.meters} | {
-        f"{entry.entry_id}_revolt_{rid}" for rid in hub.revolts
-    }
+    wanted = (
+        {f"{entry.entry_id}_meter_{mid}" for mid in hub.meters}
+        | {f"{entry.entry_id}_revolt_{rid}" for rid in hub.revolts}
+        | {f"{entry.entry_id}_climate_{key}" for key in hub.climate}
+    )
     for device in dr.async_entries_for_config_entry(dev_reg, entry.entry_id):
         for domain, ident in device.identifiers:
             if (
                 domain == DOMAIN
-                and ident.startswith((f"{entry.entry_id}_meter_", f"{entry.entry_id}_revolt_"))
+                and ident.startswith(
+                    (f"{entry.entry_id}_meter_", f"{entry.entry_id}_revolt_", f"{entry.entry_id}_climate_")
+                )
                 and ident not in wanted
             ):
                 dev_reg.async_remove_device(device.id)
@@ -201,6 +211,18 @@ async def async_setup_entry(
         for rid in sorted(hub.revolts):
             name = revolt_cfg.get(rid, {}).get(CONF_NAME) or f"Revolt {rid}"
             entities.extend(RevoltSensor(entry, rf_module.module_id, rid, name, d) for d in REVOLT_SENSORS)
+
+    # --- Empfangsstatistik je Modul
+    for mid in sorted(hub.modules):
+        entities.append(LastRxSensor(entry, mid))
+        entities.append(RxCountSensor(entry, mid))
+
+    # --- Temperatur-/Feuchtesensoren 433 MHz
+    if rf_module:
+        sensors_cfg: dict = entry.options.get(CONF_SENSORS, {})
+        for key, cfg in sensors_cfg.items():
+            for desc in climate_descriptions(cfg.get(CONF_MODEL, "")):
+                entities.append(ClimateSensor(entry, rf_module.module_id, key, cfg, desc))
 
     # --- Wireless M-Bus
     if any(m.role in WMBUS_ROLES for m in hub.modules.values()):
@@ -397,3 +419,127 @@ class SeenMetersSensor(_Base):
         self.async_on_remove(
             async_dispatcher_connect(self.hass, signal_seen(self._entry.entry_id), self.async_write_ha_state)
         )
+
+
+# ======================================================================= Thermometer 433 MHz
+
+_HUMIDITY_MODELS = {"GT_WT_02", "Type1", "KW9010"}
+
+
+def climate_descriptions(model: str) -> list[MapleSensorDescription]:
+    descs = [
+        MapleSensorDescription(
+            key="temperature", translation_key="temperature", device_class=SensorDeviceClass.TEMPERATURE,
+            state_class=SensorStateClass.MEASUREMENT, native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+            suggested_display_precision=1,
+        ),
+        MapleSensorDescription(
+            key="rssi", translation_key="rssi", device_class=SensorDeviceClass.SIGNAL_STRENGTH,
+            state_class=SensorStateClass.MEASUREMENT, native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+            entity_category=EntityCategory.DIAGNOSTIC, entity_registry_enabled_default=False,
+        ),
+    ]
+    if model in _HUMIDITY_MODELS:
+        descs.insert(1, MapleSensorDescription(
+            key="humidity", translation_key="humidity", device_class=SensorDeviceClass.HUMIDITY,
+            state_class=SensorStateClass.MEASUREMENT, native_unit_of_measurement=PERCENTAGE,
+        ))
+    return descs
+
+
+def climate_device(entry, key: str, cfg: dict) -> DeviceInfo:
+    return DeviceInfo(
+        identifiers={(DOMAIN, f"{entry.entry_id}_climate_{key}")},
+        name=cfg.get(CONF_NAME) or f"Thermometer {key}",
+        manufacturer="433 MHz",
+        model=cfg.get(CONF_MODEL) or None,
+        serial_number=key,
+        via_device=(DOMAIN, entry.entry_id),
+    )
+
+
+class ClimateSensor(_Base, RestoreSensor):
+    """Temperatur/Feuchte eines 433-MHz-Thermometers.
+
+    Die Sensoren senden jede Messung mehrfach; Zustände werden nur bei Änderung
+    oder spätestens alle 5 Minuten geschrieben.
+    """
+
+    entity_description: MapleSensorDescription
+
+    def __init__(self, entry, module_id: str, key: str, cfg: dict, desc: MapleSensorDescription) -> None:
+        super().__init__(entry, module_id)
+        self.entity_description = desc
+        self._key = key
+        self._last_write = 0.0
+        self._attr_unique_id = f"{entry.entry_id}_climate_{key}_{desc.key}"
+        self._attr_device_info = climate_device(entry, key, cfg)
+
+    @property
+    def available(self) -> bool:
+        return self._attr_native_value is not None or super().available
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if (last := await self.async_get_last_sensor_data()) is not None:
+            self._attr_native_value = last.native_value
+        self.async_on_remove(
+            async_dispatcher_connect(self.hass, signal_climate(self._entry.entry_id, self._key), self._update)
+        )
+
+    @callback
+    def _update(self, values: dict) -> None:
+        value = values.get(self.entity_description.key)
+        if value is None:
+            return
+        now = time.monotonic()
+        if value == self._attr_native_value and now - self._last_write < 300:
+            return
+        self._attr_native_value = value
+        self._last_write = now
+        self.async_write_ha_state()
+
+
+# ======================================================================= Empfangsstatistik
+
+
+class LastRxSensor(_Base):
+    """Zeitpunkt des letzten empfangenen Telegramms eines Moduls."""
+
+    _attr_translation_key = "last_rx"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, entry, module_id: str) -> None:
+        super().__init__(entry, module_id)
+        self._attr_unique_id = f"{entry.entry_id}_last_rx_{module_id}"
+        self._attr_translation_placeholders = {"module": module_id}
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
+
+    @property
+    def native_value(self):
+        mod = self._hub.modules.get(self._mid)
+        return mod.last_rx if mod else None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_dispatcher_connect(self.hass, signal_rx(self._entry.entry_id), self.async_write_ha_state)
+        )
+
+
+class RxCountSensor(LastRxSensor):
+    """Anzahl empfangener Zeilen seit Mitternacht."""
+
+    _attr_translation_key = "rx_today"
+    _attr_device_class = None
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    def __init__(self, entry, module_id: str) -> None:
+        super().__init__(entry, module_id)
+        self._attr_unique_id = f"{entry.entry_id}_rx_today_{module_id}"
+
+    @property
+    def native_value(self):
+        mod = self._hub.modules.get(self._mid)
+        return mod.rx_count if mod else None

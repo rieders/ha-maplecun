@@ -125,7 +125,8 @@
           "auto_revolt": "Revolt energy meters",
           "auto_it": "Intertechno sockets/remotes",
           "auto_meter": "Wireless M-Bus meters (careful: neighbours' too)",
-          "reset_ignored": "Show ignored devices again"
+          "reset_ignored": "Show ignored devices again",
+          "auto_sensor": "433 MHz thermometers (careful: neighbours' too)"
         }
       },
       "edit_meter": {
@@ -236,6 +237,18 @@
       },
       "external_temperature": {
         "name": "External temperature"
+      },
+      "temperature": {
+        "name": "Temperature"
+      },
+      "humidity": {
+        "name": "Humidity"
+      },
+      "last_rx": {
+        "name": "Last received module {module}"
+      },
+      "rx_today": {
+        "name": "Received today module {module}"
       }
     }
   }

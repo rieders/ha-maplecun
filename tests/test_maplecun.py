@@ -213,7 +213,7 @@ async def test_full(hass: HomeAssistant, mods):
     # Einstellungen: Ignorierte zurücksetzen
     r = await hass.config_entries.options.async_init(entry.entry_id)
     r = await hass.config_entries.options.async_configure(r["flow_id"], {"next_step_id": "settings"})
-    r = await hass.config_entries.options.async_configure(r["flow_id"], {"auto_revolt": True, "auto_it": False, "auto_meter": False, "reset_ignored": True})
+    r = await hass.config_entries.options.async_configure(r["flow_id"], {"auto_revolt": True, "auto_it": False, "auto_sensor": False, "auto_meter": False, "reset_ignored": True})
     await _settle(hass, 1.0)
     await mods["1"].send(REPEATED)
     await _settle(hass)
@@ -246,4 +246,48 @@ async def test_migration_v1(hass: HomeAssistant, mods):
     roles = {k: v["role"] for k, v in entry.data["modules"].items()}
     assert list(roles.values()).count("rf433") == 1 and list(roles.values()).count("off") == 3
     assert hass.states.get("switch.lampe").state == "off"
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+def test_climate_decoder():
+    from custom_components.maplecun import climate433 as c
+    r = c.decode("s6840BA60DC;  416: 9584")
+    assert (r.model, r.key, r.temperature, r.battery_low) == ("Mebus", "mebus_84_1", 18.6, False)
+    r = c.decode("s21D2C1A10980ED;  432: 7920")
+    assert (r.model, r.temperature, r.channel) == ("NX7674", 18.2, 2)
+    assert c.decode("s114735400540E3").temperature == 15.6       # Beispiel aus FHEM
+    assert c.decode("s6841BA60DC") is None                          # Prüfsumme falsch
+    assert c.decode("omAAAAAAAAAAAAAB50F6") is None
+
+
+async def test_climate_and_stats(hass: HomeAssistant, mods):
+    entry = MockConfigEntry(domain=DOMAIN, version=2, title="MapleCUN test", unique_id="127.0.0.1",
+        data={"host": "127.0.0.1", "modules": _modules(mods)},
+        options={"init_mode": True, "meters": {}, "revolts": {}, "it_devices": {}})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await _settle(hass, 0.6)
+
+    await mods["2"].send("s6840BA60DC;  416: 9584")
+    await mods["2"].send("s21D2C1A10980ED;  432: 7920")
+    await mods["2"].send("omAAAAAAAAAAAAAB50F6")
+    await _settle(hass)
+    hub = entry.runtime_data
+    assert {"sensor:mebus_84_1", "sensor:nx7674_07_2"} <= set(hub.discovered)
+    assert "18.6 °C" in hub.discovered_label("sensor:mebus_84_1")
+    assert hub.modules["2"].rx_count == 3                 # Anzeige wird höchstens 1x/min aktualisiert
+    assert int(hass.states.get("sensor.maplecun_test_received_today_module_2").state) >= 1
+    assert hass.states.get("sensor.maplecun_test_last_received_module_2").state not in ("unknown", "unavailable")
+
+    r = await hass.config_entries.options.async_init(entry.entry_id)
+    r = await hass.config_entries.options.async_configure(r["flow_id"], {"next_step_id": "discovered"})
+    r = await hass.config_entries.options.async_configure(r["flow_id"], {"adopt": ["sensor:mebus_84_1"], "ignore_rest": False})
+    await _settle(hass, 1.0)
+    await mods["2"].send("s8840CB60DB;  416: 9584")
+    await _settle(hass)
+    ents = [e.entity_id for e in er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id) if "thermometer" in e.entity_id]
+    print(ents)
+    assert float(hass.states.get("sensor.thermometer_mebus_84_1_temperature").state) == 20.3
+    assert hass.states.get("binary_sensor.thermometer_mebus_84_1_battery").state == "off"
+    assert "sensor:nx7674_07_2" in entry.runtime_data.discovered
     await hass.config_entries.async_unload(entry.entry_id)

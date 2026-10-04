@@ -10,6 +10,8 @@ CONF_IT_DEVICES = "it_devices"
 CONF_IT_CODES = "it_codes"
 CONF_METERS = "meters"
 CONF_REVOLTS = "revolts"
+CONF_SENSORS = "climate_sensors"
+CONF_MODEL = "model"
 CONF_AUTO = "auto_add"
 CONF_METER_ID = "meter_id"
 CONF_KEY = "key"
@@ -52,7 +54,8 @@ DEFAULT_IT_OFF = "F0"
 KIND_METER = "meter"
 KIND_IT = "it"
 KIND_REVOLT = "revolt"
-DEFAULT_AUTO = {KIND_REVOLT: True, KIND_IT: False, KIND_METER: False}
+KIND_SENSOR = "sensor"
+DEFAULT_AUTO = {KIND_REVOLT: True, KIND_IT: False, KIND_METER: False, KIND_SENSOR: False}
 
 RECONNECT_DELAY = 5
 STORAGE_VERSION = 1
@@ -93,3 +96,11 @@ def signal_it(entry_id: str, code: str) -> str:
 
 def signal_discovered(entry_id: str) -> str:
     return f"{DOMAIN}_{entry_id}_discovered"
+
+
+def signal_climate(entry_id: str, key: str) -> str:
+    return f"{DOMAIN}_{entry_id}_climate_{key}"
+
+
+def signal_rx(entry_id: str) -> str:
+    return f"{DOMAIN}_{entry_id}_rx"
