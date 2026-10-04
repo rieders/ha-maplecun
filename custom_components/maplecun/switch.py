@@ -6,7 +6,7 @@ from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import STATE_ON
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -15,7 +15,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import MapleCunConfigEntry
-from .const import CONF_IT_DEVICES, CONF_NAME, CONF_OFF, CONF_ON, DOMAIN, signal_connection
+from .const import CONF_IT_DEVICES, CONF_NAME, CONF_OFF, CONF_ON, DOMAIN, ROLE_RF433, signal_connection, signal_it
 
 
 async def async_setup_entry(
@@ -25,6 +25,9 @@ async def async_setup_entry(
 ) -> None:
     """Je konfigurierter Intertechno-Steckdose einen Schalter anlegen."""
     devices: dict[str, dict] = entry.options.get(CONF_IT_DEVICES, {})
+    module = entry.runtime_data.module_for_role(ROLE_RF433)
+    if module is None:
+        devices = {}
 
     # Geräte entfernen, die in den Optionen gelöscht wurden
     dev_reg = dr.async_get(hass)
@@ -34,7 +37,7 @@ async def async_setup_entry(
             if domain == DOMAIN and ident.startswith(f"{entry.entry_id}_it_") and ident not in wanted:
                 dev_reg.async_remove_device(device.id)
 
-    async_add_entities(IntertechnoSwitch(entry, code, dev) for code, dev in devices.items())
+    async_add_entities(IntertechnoSwitch(entry, module.module_id, code, dev) for code, dev in devices.items())
 
 
 class IntertechnoSwitch(SwitchEntity, RestoreEntity):
@@ -45,8 +48,9 @@ class IntertechnoSwitch(SwitchEntity, RestoreEntity):
     _attr_should_poll = False
     _attr_assumed_state = True
 
-    def __init__(self, entry: MapleCunConfigEntry, code: str, dev: dict) -> None:
+    def __init__(self, entry: MapleCunConfigEntry, module_id: str, code: str, dev: dict) -> None:
         self._entry = entry
+        self._mid = module_id
         self._hub = entry.runtime_data
         self._code = code
         self._on = dev[CONF_ON]
@@ -63,7 +67,7 @@ class IntertechnoSwitch(SwitchEntity, RestoreEntity):
 
     @property
     def available(self) -> bool:
-        return self._hub.connected
+        return self._hub.is_connected(self._mid)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -74,10 +78,24 @@ class IntertechnoSwitch(SwitchEntity, RestoreEntity):
                 self.hass, signal_connection(self._entry.entry_id), self.async_write_ha_state
             )
         )
+        # Fernbedienung / Wandschalter mit gleichem Code gedrückt -> Zustand übernehmen
+        self.async_on_remove(
+            async_dispatcher_connect(self.hass, signal_it(self._entry.entry_id, self._code), self._received)
+        )
+
+    @callback
+    def _received(self, cmd: str) -> None:
+        if cmd == self._on:
+            self._attr_is_on = True
+        elif cmd == self._off:
+            self._attr_is_on = False
+        else:
+            return
+        self.async_write_ha_state()
 
     async def _send(self, suffix: str, state: bool) -> None:
         try:
-            await self._hub.async_send(f"is{self._code}{suffix}")
+            await self._hub.async_send(self._mid, f"is{self._code}{suffix}")
         except (ConnectionError, OSError) as err:
             raise HomeAssistantError(f"Senden an MapleCUN fehlgeschlagen: {err}") from err
         self._attr_is_on = state

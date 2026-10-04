@@ -3,23 +3,33 @@
     "step": {
       "user": {
         "title": "MapleCUN",
-        "description": "Connection to the MapleCUN 433 MHz module. With maplecun-splitproxy this is the port of the 433 MHz module (usually 1081).",
+        "description": "IP of the host running maplecun-splitproxy and the role of each radio module. Without proxy: module 1 on port 2323 of the MapleCUN, others off.",
         "data": {
-          "host": "Host (proxy or MapleCUN IP)",
-          "port": "Port",
+          "host": "Host",
+          "port_1": "Module 1: port",
+          "role_1": "Module 1: role",
+          "port_2": "Module 2: port",
+          "role_2": "Module 2: role",
+          "port_3": "Module 3: port",
+          "role_3": "Module 3: role",
+          "port_4": "Module 4: port",
+          "role_4": "Module 4: role",
+          "init_mode": "Set receive mode on connect (X21, brc/brt/brs)",
           "it_codes": "Intertechno codes (optional, comma separated)"
         },
         "data_description": {
-          "it_codes": "10-digit tristate codes as in FHEM, e.g. FFFF0F0FFF. On = FF, off = F0 – changeable later in the options."
+          "init_mode": "Recommended. Puts each module into its role's mode (e.g. brc for Wireless M-Bus C). Does not disturb FHEM as long as the roles match.",
+          "it_codes": "10-digit tristate codes as in FHEM, e.g. FFFF0F0FFF. On = FF, off = F0."
         }
       }
     },
     "error": {
-      "cannot_connect": "Cannot connect – check host/port.",
+      "cannot_connect": "Port not reachable.",
+      "no_module": "Enable at least one module.",
       "invalid_code": "Invalid code: exactly 10 characters of 0, 1, F, D."
     },
     "abort": {
-      "already_configured": "This MapleCUN port is already configured."
+      "already_configured": "This MapleCUN is already configured."
     }
   },
   "options": {
@@ -27,9 +37,49 @@
       "init": {
         "title": "MapleCUN options",
         "menu_options": {
+          "discovered": "Adopt found devices",
+          "modules": "Radio modules (ports and roles)",
+          "settings": "Auto-adopt / ignored",
+          "add_meter": "Add Wireless M-Bus meter",
+          "edit_meter": "Edit meter (name, AES key)",
+          "remove_meter": "Remove meters",
           "add_it": "Add Intertechno socket",
           "edit_it": "Change on/off codes",
           "remove_it": "Remove Intertechno sockets"
+        },
+        "description": "Newly found devices: {found}"
+      },
+      "modules": {
+        "title": "Radio modules",
+        "description": "Host: {host}",
+        "data": {
+          "port_1": "Module 1: port",
+          "role_1": "Module 1: role",
+          "port_2": "Module 2: port",
+          "role_2": "Module 2: role",
+          "port_3": "Module 3: port",
+          "role_3": "Module 3: role",
+          "port_4": "Module 4: port",
+          "role_4": "Module 4: role",
+          "init_mode": "Set receive mode on connect (X21, brc/brt/brs)"
+        },
+        "data_description": {
+          "init_mode": "Recommended. Puts each module into its role's mode (e.g. brc for Wireless M-Bus C). Does not disturb FHEM as long as the roles match."
+        }
+      },
+      "add_meter": {
+        "title": "Wireless M-Bus meter",
+        "description": "{count} received meters not yet configured. The ID is printed on the meter or shown in FHEM (e.g. WMBUS_LSE_52143909 → 52143909).",
+        "data": {
+          "meter_id": "Meter ID",
+          "name": "Name",
+          "key": "AES key (encrypted meters only)"
+        }
+      },
+      "remove_meter": {
+        "title": "Remove meters",
+        "data": {
+          "meters": "Meters to remove"
         }
       },
       "add_it": {
@@ -59,15 +109,70 @@
         "data": {
           "codes": "Sockets to remove"
         }
+      },
+      "discovered": {
+        "title": "Found devices",
+        "description": "{found} devices were received but are not set up yet. Tick the ones you want. Meters are sorted by signal strength – your own are usually the strongest.",
+        "data": {
+          "adopt": "Adopt",
+          "ignore_rest": "Ignore all unticked from now on"
+        }
+      },
+      "settings": {
+        "title": "Auto-adopt",
+        "description": "Set up newly received devices immediately without asking. Currently ignored: {ignored}.",
+        "data": {
+          "auto_revolt": "Revolt energy meters",
+          "auto_it": "Intertechno sockets/remotes",
+          "auto_meter": "Wireless M-Bus meters (careful: neighbours' too)",
+          "reset_ignored": "Show ignored devices again"
+        }
+      },
+      "edit_meter": {
+        "title": "Select meter",
+        "data": {
+          "meter_id": "Meter"
+        }
+      },
+      "edit_meter_details": {
+        "title": "{meter}",
+        "data": {
+          "name": "Name",
+          "key": "AES key (empty = unencrypted)"
+        }
       }
     },
     "error": {
       "invalid_code": "Invalid code: exactly 10 characters of 0, 1, F, D.",
       "invalid_cmd": "Invalid: exactly 2 characters of 0, 1, F, D.",
-      "already_exists": "This socket already exists."
+      "already_exists": "Already configured.",
+      "invalid_meter": "Meter ID: exactly 8 digits, e.g. 52143909.",
+      "invalid_key": "AES key: 32 hex characters.",
+      "cannot_connect": "Port not reachable.",
+      "no_module": "Enable at least one module."
+    },
+    "abort": {
+      "nothing_found": "No new devices found."
+    }
+  },
+  "selector": {
+    "role": {
+      "options": {
+        "wmbus_c": "Wireless M-Bus C (868.95 MHz)",
+        "wmbus_t": "Wireless M-Bus T (868.95 MHz)",
+        "wmbus_s": "Wireless M-Bus S (868.3 MHz)",
+        "rf433": "433 MHz (Revolt, Intertechno)",
+        "monitor": "Monitor only (e.g. HomeMatic/MAX! in FHEM)",
+        "off": "Off"
+      }
     }
   },
   "entity": {
+    "binary_sensor": {
+      "module": {
+        "name": "Module {module}"
+      }
+    },
     "sensor": {
       "power": {
         "name": "Power"
@@ -88,7 +193,49 @@
         "name": "Power factor"
       },
       "last_raw": {
-        "name": "Last raw data"
+        "name": "Raw data module {module}"
+      },
+      "seen_meters": {
+        "name": "Received meters"
+      },
+      "rssi": {
+        "name": "Signal strength"
+      },
+      "meter_time": {
+        "name": "Meter time"
+      },
+      "volume": {
+        "name": "Meter reading"
+      },
+      "volume_due": {
+        "name": "Due date value"
+      },
+      "meter_energy": {
+        "name": "Meter reading"
+      },
+      "energy_due": {
+        "name": "Due date value"
+      },
+      "hca": {
+        "name": "Consumption units"
+      },
+      "hca_due": {
+        "name": "Due date value"
+      },
+      "due_date": {
+        "name": "Due date"
+      },
+      "volume_flow": {
+        "name": "Flow"
+      },
+      "flow_temperature": {
+        "name": "Flow temperature"
+      },
+      "return_temperature": {
+        "name": "Return temperature"
+      },
+      "external_temperature": {
+        "name": "External temperature"
       }
     }
   }

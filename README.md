@@ -1,65 +1,86 @@
 # MapleCUN für Home Assistant
 
-Custom Integration, die das **433-MHz-Modul eines [MapleCUN](https://wiki.fhem.de/wiki/MapleCUN)** (a-culfw, bis zu 4 CC1101-Funkmodule) direkt in Home Assistant bringt – ohne FHEM.
+Custom Integration, die alle Funkmodule eines **[MapleCUN](https://wiki.fhem.de/wiki/MapleCUN)** (a-culfw, bis zu 4 CC1101-Module) direkt in Home Assistant bringt – ohne FHEM, ohne wmbusmeters.
 
-| Gerät | Funktion in HA |
+| Aufgabe eines Moduls | Geräte in Home Assistant |
 |---|---|
-| **Revolt NC-5462** Energiemesser | wird automatisch erkannt → Leistung, Energie (Energie-Dashboard), Spannung, Strom, Leistungsfaktor, Frequenz |
-| **Intertechno** Funksteckdosen (Tristate) | Schalter |
-| alle anderen 433-MHz-Telegramme | Diagnose-Sensor „Letzte Rohdaten“ (standardmäßig deaktiviert) |
+| **Wireless M-Bus C / T / S** | Wasser-, Wärme-, Gaszähler, Heizkostenverteiler (OMS): Zählerstand, Stichtagswert, Stichtag, Signalstärke … – auch über Repeater empfangene und AES-verschlüsselte Zähler (Modus 5) |
+| **433 MHz** | Revolt NC-5462 Energiemesser (automatisch erkannt), Intertechno-Steckdosen (Tristate) |
+| **Nur überwachen** | z. B. ein HomeMatic-/MAX!-Modul, das weiter von FHEM bedient wird – nur Verbindungsstatus |
+
+Jedes Modul bekommt einen Verbindungs-Sensor, dazu gibt es einen Diagnose-Sensor **„Empfangene Zähler“** mit allen gehörten Wireless-M-Bus-IDs.
 
 ## Voraussetzung: maplecun-splitproxy
 
-Ein MapleCUN mit mehreren Funkmodulen spricht alle Module über **einen** TCP-Port an (Präfixe `*`, `**`, `***`). Der Docker-Container [boriswde/maplecun-splitproxy](https://hub.docker.com/r/boriswde/maplecun-splitproxy) gibt jedem Modul einen eigenen Port (1080–1083) und erlaubt mehrere Programme gleichzeitig (z. B. FHEM, wmbusmeters und Home Assistant).
+Ein MapleCUN spricht alle Module über **einen** TCP-Port an (Präfixe `*`, `**`, `***`). Der Container [boriswde/maplecun-splitproxy](https://hub.docker.com/r/boriswde/maplecun-splitproxy) gibt jedem Modul einen eigenen Port (1080–1083) und erlaubt mehrere Programme gleichzeitig (FHEM und Home Assistant parallel).
 
-Eine fertige `docker-compose.yaml` liegt unter [`extras/wmbusmeters`](extras/wmbusmeters).
+```yaml
+services:
+  maplecun-splitproxy:
+    image: boriswde/maplecun-splitproxy:latest
+    restart: unless-stopped
+    ports: ["1080:1080", "1081:1081", "1082:1082", "1083:1083"]
+    environment:
+      - MAPLECUN_IP=192.168.1.55
+      - MAPLECUN_PORT=2323
+```
 
-> Hat dein MapleCUN nur ein Modul, kannst du die Integration auch direkt auf `IP-des-MapleCUN:2323` zeigen lassen.
+> Ohne Proxy (MapleCUN mit nur einem Modul): Modul 1 auf `IP-des-MapleCUN:2323`, die anderen auf „Aus“.
 
 ## Installation
 
 ### HACS (empfohlen)
 
-1. HACS → ⋮ → **Benutzerdefinierte Repositories** → `https://github.com/rieders/ha-maplecun`, Kategorie **Integration**
-2. „MapleCUN“ installieren, Home Assistant neu starten
+1. HACS → ⋮ → **Benutzerdefinierte Repositories** → `https://github.com/rieders/ha-maplecun`, Typ **Integration**
+2. „MapleCUN“ herunterladen, Home Assistant neu starten
 
 ### Manuell
 
-Ordner `custom_components/maplecun` nach `/config/custom_components/` kopieren und Home Assistant neu starten.
+Ordner `custom_components/maplecun` nach `/config/custom_components/` kopieren, Home Assistant neu starten.
 
 ## Einrichtung
 
 **Einstellungen → Geräte & Dienste → Integration hinzufügen → MapleCUN**
 
-| Feld | Beispiel |
-|---|---|
-| Host | IP des Rechners mit dem Split-Proxy |
-| Port | `1081` (Port des 433-MHz-Moduls) |
-| Intertechno-Codes | `FFFF00FFFF, FFFF0F0FFF` (optional, 10-stellige Tristate-Codes wie in FHEM) |
+* **Host** – IP des Rechners mit dem Split-Proxy
+* **Modul 1–4** – Port und Aufgabe (Wireless M-Bus C/T/S, 433 MHz, Nur überwachen, Aus)
+* **Empfangsmodus setzen** – schickt beim Verbinden `X21` bzw. `brc`/`brt`/`brs`
+* **Intertechno-Codes** – optional, z. B. `FFFF00FFFF, FFFF0F0FFF`
 
-Neue Intertechno-Steckdosen, abweichende Ein-/Aus-Codes (Standard: Ein `FF`, Aus `F0`) und das Entfernen von Steckdosen gibt es unter **Konfigurieren**.
+### Geräte finden und übernehmen
 
-Revolt-Geräte erscheinen automatisch, sobald sie funken. Nicht mehr benötigte Revolt-Geräte lassen sich auf der Geräteseite löschen.
+Der MapleCUN hört alles in Funkreichweite – Zähler, Fernbedienungen und Energiemesser der Nachbarn eingeschlossen. Deshalb gilt:
 
-### Codes aus FHEM übernehmen
+1. Neu empfangene Geräte landen in einer Liste **„Gefundene Geräte“**; eine Benachrichtigung weist darauf hin.
+2. **Konfigurieren → Gefundene Geräte übernehmen**: gewünschte Geräte anhaken, optional **„Alle nicht angehakten künftig ignorieren“**.
+   Zähler sind nach Signalstärke sortiert – die eigenen sind meist die stärksten. Über Repeater empfangene Zähler sind gekennzeichnet.
+3. Unter **Konfigurieren → Automatisch übernehmen** lässt sich je Gerätetyp festlegen, was ohne Nachfrage eingerichtet wird
+   (Vorgabe: Revolt ja, Intertechno nein, Zähler nein) und ignorierte Geräte wieder einblenden.
 
-In der FHEM-Befehlszeile:
+Übernommene Geräte lassen sich auf ihrer Geräteseite wieder löschen.
 
-```
-list TYPE=IT DEF
-```
+### Wireless-M-Bus-Zähler
 
-Ausgabe z. B. `FFFF0F0FFF FF F0` → Code `FFFF0F0FFF`, Ein `FF`, Aus `F0`.
+Viele Zähler senden nur wenige Male am Tag – Geduld. Die Sensoren (Zählerstand, Stichtagswert, Stichtag, Signalstärke …) entstehen beim ersten Telegramm nach der Übernahme; Zählerstände eignen sich direkt für das **Energie-Dashboard**.
+Name und AES-Schlüssel (verschlüsselte Zähler) unter **Konfigurieren → Zähler bearbeiten**. Die Zähler-ID steht auf dem Gerät bzw. in FHEM im Namen: `WMBUS_LSE_52143909_26_7` → `52143909`.
 
-## Wireless M-Bus (Wasser-/Wärmezähler)
+### Intertechno
 
-Wireless M-Bus wird (noch) nicht von der Integration selbst dekodiert. Bewährt hat sich [wmbusmeters](https://github.com/wmbusmeters/wmbusmeters) am Split-Proxy. Dabei gibt es eine Hürde: a-culfw antwortet auf `brc` mit `OFF` statt `CMODE`, wmbusmeters bricht deshalb ab. [`extras/wmbusmeters/culbridge.py`](extras/wmbusmeters/culbridge.py) löst das – Anleitung siehe dort bzw. `docker-compose.yaml`.
+Wird eine Intertechno-Fernbedienung oder ein Wandschalter gedrückt, erscheint der Code unter *Gefundene Geräte*. Übernommene Steckdosen lassen sich schalten, und ihr Zustand folgt auch der Fernbedienung.
+Codes aus FHEM: `list TYPE=IT DEF` → z. B. `FFFF0F0FFF FF F0` = Code, Ein, Aus. Manuell hinzufügen und Ein-/Aus-Codes ändern unter **Konfigurieren**.
 
 ## Technisches
 
-* Verbindung per TCP (asyncio), automatischer Reconnect, Entitäten werden bei Verbindungsverlust „nicht verfügbar“
-* Revolt-Dekodierung nach dem Aufbau von FHEM `19_Revolt.pm`, inkl. Plausibilitätsprüfung und Filter gegen Sprünge im Energiezähler
-* Intertechno: a-culfw-Befehl `is<Code><Ein/Aus>`; Funk ist Einweg, der Zustand wird angenommen und über Neustarts wiederhergestellt
+* a-culfw liefert Wireless-M-Bus-Telegramme als `b…` (Rahmen A, mit Block-CRCs) bzw. `bY…` (Rahmen B) inkl. LQI/RSSI; alle CRCs werden geprüft
+* OMS-Kurz-/Langheader, ELL (CI 8C), eingepackte Repeater-Telegramme, AES-128-CBC (Modus 5), DIF/VIF-Dekodierung
+* Revolt-Dekodierung nach dem Aufbau von FHEM `19_Revolt.pm`, inkl. Plausibilitätsprüfung
+* Verbindung je Modul per TCP (asyncio), automatischer Reconnect
+* Intertechno-Empfang (`i…`, Tristate) nach dem Aufbau von FHEM `10_IT.pm`
+* Upgrade von 0.1/0.2: bestehende Einträge und Revolts werden automatisch übernommen
+
+## Alternative: wmbusmeters
+
+Wer lieber [wmbusmeters](https://github.com/wmbusmeters/wmbusmeters) nutzt: a-culfw antwortet auf `brc` mit `OFF`, wodurch wmbusmeters abbricht. [`extras/wmbusmeters`](extras/wmbusmeters) enthält eine Brücke, die das löst.
 
 ## Tests
 

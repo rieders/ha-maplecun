@@ -3,23 +3,33 @@
     "step": {
       "user": {
         "title": "MapleCUN",
-        "description": "Verbindung zum 433-MHz-Modul des MapleCUN. Mit maplecun-splitproxy ist das der Port des 433-MHz-Moduls (meist 1081).",
+        "description": "IP des Rechners mit maplecun-splitproxy und Aufgabe je Funkmodul. Ohne Proxy: Modul 1 auf Port 2323 des MapleCUN, die übrigen aus.",
         "data": {
-          "host": "Host (IP des Proxys oder MapleCUN)",
-          "port": "Port",
+          "host": "Host",
+          "port_1": "Modul 1: Port",
+          "role_1": "Modul 1: Aufgabe",
+          "port_2": "Modul 2: Port",
+          "role_2": "Modul 2: Aufgabe",
+          "port_3": "Modul 3: Port",
+          "role_3": "Modul 3: Aufgabe",
+          "port_4": "Modul 4: Port",
+          "role_4": "Modul 4: Aufgabe",
+          "init_mode": "Empfangsmodus beim Verbinden setzen (X21, brc/brt/brs)",
           "it_codes": "Intertechno-Codes (optional, kommagetrennt)"
         },
         "data_description": {
-          "it_codes": "10-stellige Tristate-Codes wie in FHEM, z. B. FFFF0F0FFF. Ein = FF, Aus = F0 – später in den Optionen änderbar."
+          "init_mode": "Empfohlen. Setzt jedes Modul auf seine Aufgabe (z. B. brc für Wireless M-Bus C). Stört FHEM nicht, solange die Aufgaben dort gleich eingestellt sind.",
+          "it_codes": "10-stellige Tristate-Codes wie in FHEM, z. B. FFFF0F0FFF. Ein = FF, Aus = F0."
         }
       }
     },
     "error": {
-      "cannot_connect": "Keine Verbindung möglich – Host/Port prüfen.",
+      "cannot_connect": "Port nicht erreichbar.",
+      "no_module": "Mindestens ein Modul aktivieren.",
       "invalid_code": "Ungültiger Code: genau 10 Zeichen aus 0, 1, F, D."
     },
     "abort": {
-      "already_configured": "Dieser MapleCUN-Port ist bereits eingerichtet."
+      "already_configured": "Dieser MapleCUN ist bereits eingerichtet."
     }
   },
   "options": {
@@ -27,9 +37,49 @@
       "init": {
         "title": "MapleCUN-Optionen",
         "menu_options": {
+          "discovered": "Gefundene Geräte übernehmen",
+          "modules": "Funkmodule (Ports und Aufgaben)",
+          "settings": "Automatisch übernehmen / Ignorierte",
+          "add_meter": "Wireless-M-Bus-Zähler hinzufügen",
+          "edit_meter": "Zähler bearbeiten (Name, AES-Schlüssel)",
+          "remove_meter": "Zähler entfernen",
           "add_it": "Intertechno-Steckdose hinzufügen",
           "edit_it": "Ein-/Aus-Codes ändern",
           "remove_it": "Intertechno-Steckdosen entfernen"
+        },
+        "description": "Neu gefundene Geräte: {found}"
+      },
+      "modules": {
+        "title": "Funkmodule",
+        "description": "Host: {host}",
+        "data": {
+          "port_1": "Modul 1: Port",
+          "role_1": "Modul 1: Aufgabe",
+          "port_2": "Modul 2: Port",
+          "role_2": "Modul 2: Aufgabe",
+          "port_3": "Modul 3: Port",
+          "role_3": "Modul 3: Aufgabe",
+          "port_4": "Modul 4: Port",
+          "role_4": "Modul 4: Aufgabe",
+          "init_mode": "Empfangsmodus beim Verbinden setzen (X21, brc/brt/brs)"
+        },
+        "data_description": {
+          "init_mode": "Empfohlen. Setzt jedes Modul auf seine Aufgabe (z. B. brc für Wireless M-Bus C). Stört FHEM nicht, solange die Aufgaben dort gleich eingestellt sind."
+        }
+      },
+      "add_meter": {
+        "title": "Wireless-M-Bus-Zähler",
+        "description": "{count} empfangene, noch nicht eingerichtete Zähler. Die ID steht auf dem Zähler bzw. in FHEM (z. B. WMBUS_LSE_52143909 → 52143909).",
+        "data": {
+          "meter_id": "Zähler-ID",
+          "name": "Name",
+          "key": "AES-Schlüssel (nur bei verschlüsselten Zählern)"
+        }
+      },
+      "remove_meter": {
+        "title": "Zähler entfernen",
+        "data": {
+          "meters": "Zu entfernende Zähler"
         }
       },
       "add_it": {
@@ -59,15 +109,70 @@
         "data": {
           "codes": "Zu entfernende Steckdosen"
         }
+      },
+      "discovered": {
+        "title": "Gefundene Geräte",
+        "description": "{found} Geräte wurden empfangen, sind aber noch nicht eingerichtet. Die gewünschten anhaken. Zähler stehen nach Signalstärke sortiert – die eigenen sind meist die stärksten.",
+        "data": {
+          "adopt": "Übernehmen",
+          "ignore_rest": "Alle nicht angehakten künftig ignorieren"
+        }
+      },
+      "settings": {
+        "title": "Automatisch übernehmen",
+        "description": "Neu empfangene Geräte direkt einrichten, ohne Nachfrage. Aktuell ignoriert: {ignored}.",
+        "data": {
+          "auto_revolt": "Revolt-Energiemesser",
+          "auto_it": "Intertechno-Steckdosen/Fernbedienungen",
+          "auto_meter": "Wireless-M-Bus-Zähler (Vorsicht: auch die der Nachbarn)",
+          "reset_ignored": "Ignorierte Geräte wieder anzeigen"
+        }
+      },
+      "edit_meter": {
+        "title": "Zähler wählen",
+        "data": {
+          "meter_id": "Zähler"
+        }
+      },
+      "edit_meter_details": {
+        "title": "{meter}",
+        "data": {
+          "name": "Name",
+          "key": "AES-Schlüssel (leer = unverschlüsselt)"
+        }
       }
     },
     "error": {
       "invalid_code": "Ungültiger Code: genau 10 Zeichen aus 0, 1, F, D.",
       "invalid_cmd": "Ungültig: genau 2 Zeichen aus 0, 1, F, D.",
-      "already_exists": "Diese Steckdose gibt es schon."
+      "already_exists": "Ist bereits eingerichtet.",
+      "invalid_meter": "Zähler-ID: genau 8 Ziffern, z. B. 52143909.",
+      "invalid_key": "AES-Schlüssel: 32 Hex-Zeichen.",
+      "cannot_connect": "Port nicht erreichbar.",
+      "no_module": "Mindestens ein Modul aktivieren."
+    },
+    "abort": {
+      "nothing_found": "Keine neuen Geräte gefunden."
+    }
+  },
+  "selector": {
+    "role": {
+      "options": {
+        "wmbus_c": "Wireless M-Bus C (868,95 MHz)",
+        "wmbus_t": "Wireless M-Bus T (868,95 MHz)",
+        "wmbus_s": "Wireless M-Bus S (868,3 MHz)",
+        "rf433": "433 MHz (Revolt, Intertechno)",
+        "monitor": "Nur überwachen (z. B. HomeMatic/MAX! in FHEM)",
+        "off": "Aus"
+      }
     }
   },
   "entity": {
+    "binary_sensor": {
+      "module": {
+        "name": "Modul {module}"
+      }
+    },
     "sensor": {
       "power": {
         "name": "Leistung"
@@ -88,7 +193,49 @@
         "name": "Leistungsfaktor"
       },
       "last_raw": {
-        "name": "Letzte Rohdaten"
+        "name": "Rohdaten Modul {module}"
+      },
+      "seen_meters": {
+        "name": "Empfangene Zähler"
+      },
+      "rssi": {
+        "name": "Signalstärke"
+      },
+      "meter_time": {
+        "name": "Zählerzeit"
+      },
+      "volume": {
+        "name": "Zählerstand"
+      },
+      "volume_due": {
+        "name": "Stichtagswert"
+      },
+      "meter_energy": {
+        "name": "Zählerstand"
+      },
+      "energy_due": {
+        "name": "Stichtagswert"
+      },
+      "hca": {
+        "name": "Verbrauchseinheiten"
+      },
+      "hca_due": {
+        "name": "Stichtagswert"
+      },
+      "due_date": {
+        "name": "Stichtag"
+      },
+      "volume_flow": {
+        "name": "Durchfluss"
+      },
+      "flow_temperature": {
+        "name": "Vorlauftemperatur"
+      },
+      "return_temperature": {
+        "name": "Rücklauftemperatur"
+      },
+      "external_temperature": {
+        "name": "Außentemperatur"
       }
     }
   }
