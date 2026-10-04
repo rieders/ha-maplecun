@@ -1,0 +1,8 @@
+loglevel=normal
+device=/dev/ttyCUL_C:cul:c1
+logtelegrams=false
+format=json
+meterfiles=/wmbusmeters_data/logs/meter_readings
+meterfilesaction=overwrite
+logfile=/dev/stdout
+shell=/usr/bin/mosquitto_pub -p 1883 -h MQTT_HOST -u 'MQTT_USER' -P 'MQTT_PASS' -r -t wmbusmeters/$METER_NAME -m "$METER_JSON"

@@ -1,0 +1,95 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "MapleCUN",
+        "description": "Verbindung zum 433-MHz-Modul des MapleCUN. Mit maplecun-splitproxy ist das der Port des 433-MHz-Moduls (meist 1081).",
+        "data": {
+          "host": "Host (IP des Proxys oder MapleCUN)",
+          "port": "Port",
+          "it_codes": "Intertechno-Codes (optional, kommagetrennt)"
+        },
+        "data_description": {
+          "it_codes": "10-stellige Tristate-Codes wie in FHEM, z. B. FFFF0F0FFF. Ein = FF, Aus = F0 – später in den Optionen änderbar."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Keine Verbindung möglich – Host/Port prüfen.",
+      "invalid_code": "Ungültiger Code: genau 10 Zeichen aus 0, 1, F, D."
+    },
+    "abort": {
+      "already_configured": "Dieser MapleCUN-Port ist bereits eingerichtet."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "MapleCUN-Optionen",
+        "menu_options": {
+          "add_it": "Intertechno-Steckdose hinzufügen",
+          "edit_it": "Ein-/Aus-Codes ändern",
+          "remove_it": "Intertechno-Steckdosen entfernen"
+        }
+      },
+      "add_it": {
+        "title": "Intertechno-Steckdose",
+        "data": {
+          "name": "Name",
+          "code": "Code (10 Zeichen, z. B. FFFF0F0FFF)",
+          "on": "Code für Ein",
+          "off": "Code für Aus"
+        }
+      },
+      "edit_it": {
+        "title": "Steckdose wählen",
+        "data": {
+          "code": "Steckdose"
+        }
+      },
+      "edit_it_codes": {
+        "title": "{code}",
+        "data": {
+          "on": "Code für Ein",
+          "off": "Code für Aus"
+        }
+      },
+      "remove_it": {
+        "title": "Steckdosen entfernen",
+        "data": {
+          "codes": "Zu entfernende Steckdosen"
+        }
+      }
+    },
+    "error": {
+      "invalid_code": "Ungültiger Code: genau 10 Zeichen aus 0, 1, F, D.",
+      "invalid_cmd": "Ungültig: genau 2 Zeichen aus 0, 1, F, D.",
+      "already_exists": "Diese Steckdose gibt es schon."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "power": {
+        "name": "Leistung"
+      },
+      "energy": {
+        "name": "Energie"
+      },
+      "voltage": {
+        "name": "Spannung"
+      },
+      "current": {
+        "name": "Strom"
+      },
+      "frequency": {
+        "name": "Frequenz"
+      },
+      "power_factor": {
+        "name": "Leistungsfaktor"
+      },
+      "last_raw": {
+        "name": "Letzte Rohdaten"
+      }
+    }
+  }
+}

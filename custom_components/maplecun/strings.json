@@ -1,0 +1,95 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "MapleCUN",
+        "description": "Connection to the MapleCUN 433 MHz module. With maplecun-splitproxy this is the port of the 433 MHz module (usually 1081).",
+        "data": {
+          "host": "Host (proxy or MapleCUN IP)",
+          "port": "Port",
+          "it_codes": "Intertechno codes (optional, comma separated)"
+        },
+        "data_description": {
+          "it_codes": "10-digit tristate codes as in FHEM, e.g. FFFF0F0FFF. On = FF, off = F0 – changeable later in the options."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect – check host/port.",
+      "invalid_code": "Invalid code: exactly 10 characters of 0, 1, F, D."
+    },
+    "abort": {
+      "already_configured": "This MapleCUN port is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "MapleCUN options",
+        "menu_options": {
+          "add_it": "Add Intertechno socket",
+          "edit_it": "Change on/off codes",
+          "remove_it": "Remove Intertechno sockets"
+        }
+      },
+      "add_it": {
+        "title": "Intertechno socket",
+        "data": {
+          "name": "Name",
+          "code": "Code (10 chars, e.g. FFFF0F0FFF)",
+          "on": "On code",
+          "off": "Off code"
+        }
+      },
+      "edit_it": {
+        "title": "Select socket",
+        "data": {
+          "code": "Socket"
+        }
+      },
+      "edit_it_codes": {
+        "title": "{code}",
+        "data": {
+          "on": "On code",
+          "off": "Off code"
+        }
+      },
+      "remove_it": {
+        "title": "Remove sockets",
+        "data": {
+          "codes": "Sockets to remove"
+        }
+      }
+    },
+    "error": {
+      "invalid_code": "Invalid code: exactly 10 characters of 0, 1, F, D.",
+      "invalid_cmd": "Invalid: exactly 2 characters of 0, 1, F, D.",
+      "already_exists": "This socket already exists."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "power": {
+        "name": "Power"
+      },
+      "energy": {
+        "name": "Energy"
+      },
+      "voltage": {
+        "name": "Voltage"
+      },
+      "current": {
+        "name": "Current"
+      },
+      "frequency": {
+        "name": "Frequency"
+      },
+      "power_factor": {
+        "name": "Power factor"
+      },
+      "last_raw": {
+        "name": "Last raw data"
+      }
+    }
+  }
+}

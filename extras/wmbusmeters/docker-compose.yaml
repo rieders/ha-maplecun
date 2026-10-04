@@ -1,0 +1,27 @@
+services:
+  maplecun-splitproxy:
+    image: boriswde/maplecun-splitproxy:latest
+    container_name: maplecun-splitproxy
+    restart: unless-stopped
+    ports:
+      - "1080:1080"
+      - "1081:1081"
+      - "1082:1082"
+      - "1083:1083"
+    environment:
+      - MAPLECUN_IP=192.168.1.55      # IP des MapleCUN
+      - MAPLECUN_PORT=2323
+      - DEBUG=false
+      - RECONNECT_TIMEOUT=5
+
+  wmbusmeters:
+    image: wmbusmeters/wmbusmeters
+    container_name: wmbusmeters
+    restart: unless-stopped
+    depends_on:
+      - maplecun-splitproxy
+    stop_grace_period: 30s
+    volumes:
+      - ./wmbusmeters:/wmbusmeters_data   # enthält start.sh, culbridge.py, etc/
+      - /etc/localtime:/etc/localtime:ro
+    command: ["sh", "/wmbusmeters_data/start.sh"]
