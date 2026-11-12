@@ -74,6 +74,9 @@
           "meter_id": "Zähler-ID",
           "name": "Name",
           "key": "AES-Schlüssel (nur bei verschlüsselten Zählern)"
+        },
+        "data_description": {
+          "key": "AES-128-Schlüssel des Zählers (32 Hex-Zeichen). Gilt für die Sicherheitsmodi 5 und 7 sowie verschlüsselten Extended Link Layer (Kamstrup). Leer lassen bei unverschlüsselten Zählern."
         }
       },
       "remove_meter": {
@@ -143,6 +146,9 @@
         "data": {
           "name": "Name",
           "key": "AES-Schlüssel (leer = unverschlüsselt)"
+        },
+        "data_description": {
+          "key": "AES-128-Schlüssel des Zählers (32 Hex-Zeichen). Gilt für die Sicherheitsmodi 5 und 7 sowie verschlüsselten Extended Link Layer (Kamstrup). Leer lassen bei unverschlüsselten Zählern."
         }
       }
     },

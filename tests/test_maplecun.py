@@ -267,6 +267,50 @@ async def test_full(hass: HomeAssistant, mods, caplog):
     await hass.config_entries.async_unload(entry.entry_id)
 
 
+def _cul_frame_a(tele_hex: str, status: str = "80") -> str:
+    """CRC-freies Telegramm als a-culfw-Zeile (Rahmen A mit Block-CRCs) verpacken."""
+    tele = bytes.fromhex(tele_hex)
+    blocks = [tele[:10]] + [tele[i:i + 16] for i in range(10, len(tele), 16)]
+    raw = b"".join(b + wmbus.crc16(b).to_bytes(2, "big") for b in blocks)
+    return "b" + raw.hex().upper() + status
+
+
+# wmbusmeters simulations/serial_aes.msg: Kamstrup Multical 21, ELL 8D, AES-CTR
+KAMSTRUP = "2A442D2C998734761B168D2091D37CAC21E1D68CDAFFCD3DC452BD802913FF7B1706CA9E355D6C2701CC24"
+
+
+async def test_encrypted_meter_key_via_options(hass: HomeAssistant, mods, caplog):
+    entry = MockConfigEntry(domain=DOMAIN, version=2, title="MapleCUN test", unique_id="127.0.0.1",
+        data={"host": "127.0.0.1", "modules": _modules(mods)},
+        options={"init_mode": True, "meters": {}, "revolts": {}, "it_devices": {}})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await _settle(hass, 0.6)
+
+    # falscher Schlüssel -> abgelehnt, Warnung im Log
+    r = await hass.config_entries.options.async_init(entry.entry_id)
+    r = await hass.config_entries.options.async_configure(r["flow_id"], {"next_step_id": "add_meter"})
+    r = await hass.config_entries.options.async_configure(r["flow_id"], {"meter_id": "76348799", "key": "00" * 16})
+    assert r["type"] is FlowResultType.CREATE_ENTRY
+    await _settle(hass, 1.0)
+    await mods["1"].send(_cul_frame_a(KAMSTRUP))
+    await _settle(hass)
+    assert "Zähler 76348799: Payload-CRC (ELL) falsch" in caplog.text
+    assert hass.states.get("sensor.kaltwasser_76348799_meter_reading") is None
+
+    # richtigen Schlüssel eintragen
+    r = await hass.config_entries.options.async_init(entry.entry_id)
+    r = await hass.config_entries.options.async_configure(r["flow_id"], {"next_step_id": "edit_meter"})
+    r = await hass.config_entries.options.async_configure(r["flow_id"], {"meter_id": "76348799"})
+    r = await hass.config_entries.options.async_configure(r["flow_id"], {"name": "", "key": "28F64A24988064A079AA2C807D6102AE"})
+    await _settle(hass, 1.0)
+    await mods["1"].send(_cul_frame_a(KAMSTRUP))
+    await _settle(hass)
+    st = hass.states.get("sensor.kaltwasser_76348799_meter_reading")
+    assert float(st.state) == 6.408 and st.attributes["device_class"] == "water"
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
 async def test_wmbus_mode_off_retry(hass: HomeAssistant, mods):
     """a-culfw schaltet bei "brc" um: Antwort OFF -> einmal erneut setzen, nicht endlos."""
     entry = MockConfigEntry(domain=DOMAIN, version=2, title="MapleCUN test", unique_id="127.0.0.1",

@@ -1,17 +1,10 @@
 """Wireless-M-Bus-Decoder – ohne Home Assistant lauffähig (lädt wmbus.py direkt)."""
 
-import importlib.util
-import sys
 from datetime import date, datetime
-from pathlib import Path
 
 import pytest
 
-_PATH = Path(__file__).parents[1] / "custom_components" / "maplecun" / "wmbus.py"
-_spec = importlib.util.spec_from_file_location("maplecun_wmbus", _PATH)
-wmbus = importlib.util.module_from_spec(_spec)
-sys.modules[_spec.name] = wmbus          # für dataclasses nötig
-_spec.loader.exec_module(wmbus)
+from .wmbus_loader import wmbus
 
 # echte Zeilen von a-culfw (MapleCUN), jeweils mit gültigen Block-CRCs und einem angehängten Byte
 DIRECT_WARM = (
@@ -132,14 +125,16 @@ def test_records_filler_unknown_and_manufacturer():
         0x0B, 0x6E, 0x88, 0x04, 0x00,  # BCD 6 Stellen, HKV 488
         0x0C, 0x13, 0x78, 0x56, 0x34, 0x12,  # BCD 8 Stellen, 12345.678 m³
         0x02, 0xBB, 0x56, 0x00, 0x00,  # VIF mit unbekannter Erweiterung
-        0x01, 0x7B, 0x05,              # unbekannter VIF
+        0x01, 0x7A, 0x05,              # VIF ohne Eintrag in den Tabellen (Busadresse)
         0x0F, 0x01, 0x02, 0x03,        # Rest herstellerspezifisch
     ])
     recs = {r.key: r.value for r in wmbus.parse_records(data)}
     assert recs["hca"] == 488
     assert recs["volume"] == 12345.678
     assert "volume_flow_x56" in recs and "volume_flow" not in recs
-    assert len(recs) == 4
+    assert recs["vif_7a"] == 5
+    assert recs["manufacturer_data"] == "010203"
+    assert len(recs) == 5
 
 
 def test_dates():

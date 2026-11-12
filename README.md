@@ -86,10 +86,12 @@ Codes aus FHEM: `list TYPE=IT DEF` → z. B. `FFFF0F0FFF FF F0` = Code, Ein, Aus
 
 ## Technisches
 
-* a-culfw liefert Wireless-M-Bus-Telegramme als `b…` (Rahmen A, mit Block-CRCs) bzw. `bY…` (Rahmen B) plus ein angehängtes Statusbyte; alle CRCs werden geprüft (CRC-16/EN-13757), Telegramme mit CRC-Fehler verworfen
-* OMS-Kurz-/Langheader, ELL (CI 8C), AES-128-CBC (Modus 5), DIF/VIF-Dekodierung
+* a-culfw liefert Wireless-M-Bus-Telegramme als `b…` (Rahmen A, mit Block-CRCs) bzw. `bY…` (Rahmen B, auch über zwei CRC-Blöcke) plus ein angehängtes Statusbyte; alle CRCs werden geprüft (CRC-16/EN-13757), Telegramme mit CRC-Fehler verworfen
+* Der Wireless-M-Bus-Decoder ist eine Portierung von FHEM `WMBus.pm` (siehe [NOTICE.md](NOTICE.md)): OMS-Kurz-/Langheader (CI 7A/72/78), Extended Link Layer (CI 8C/8D/8E/8F, AES-128-CTR), AFL (CI 90), AES-128-CBC Sicherheitsmodus 5 und 7 (Schlüsselableitung per AES-CMAC, MAC-Prüfung), DIF/VIF-Dekodierung mit den vollständigen VIF-Tabellen aus FHEM (inkl. FD/FB, kombinierbarer VIFEs, Klartext-VIF, Easymeter/Kamstrup)
+* Wo `WMBus.pm` von EN 13757 abweicht (Speichernummern aus DIFE, Länge der ELL-Payload-CRC, Reihenfolge von Zeichenketten, Korrekturfaktor-VIFEs), folgt der Port der Norm – belegt mit echten Telegrammen; die Stellen sind im Code markiert
+* Nicht unterstützt: fragmentierte AFL-Telegramme, SML-Nutzdaten (CI 7E/7F), Kamstrup-Compact-Frames (CI 79), herstellerspezifische CI-Felder
 * Über Netzwerkknoten weitergeleitete Telegramme (C=C4, CI=A0, Hersteller `LSE` + Bit 15): das innere Zählertelegramm ab Offset 18 wird bis zum Ende des äußeren Telegramms ausgewertet (das innere L-Feld ist unzuverlässig). An diesem Rahmen scheitern FHEM (`Unsupported CI Field a0`) und vermutlich auch wmbusmeters
-* Der Decoder (`wmbus.py`) hat keine Home-Assistant-Abhängigkeiten: `tests/test_wmbus.py` läuft mit reinem `pytest`
+* Der Decoder (`wmbus.py`) hat keine Home-Assistant-Abhängigkeiten: `tests/test_wmbus.py` und `tests/test_wmbus_port.py` laufen mit reinem `pytest` (+ `cryptography` für AES)
 * a-culfw schaltet bei `brc`/`brt`/`brs` um: meldet ein Wireless-M-Bus-Modul `OFF`, wird der Modus einmal erneut gesetzt
 * Revolt-Dekodierung nach dem Aufbau von FHEM `19_Revolt.pm`, inkl. Plausibilitätsprüfung
 * Verbindung je Modul per TCP (asyncio), automatischer Reconnect
@@ -107,14 +109,14 @@ pip install -r requirements_test.txt
 pytest tests
 ```
 
-Nur den Decoder (ohne Home Assistant): `pip install pytest && pytest tests/test_wmbus.py`
+Nur den Decoder (ohne Home Assistant): `pip install pytest cryptography && pytest tests/test_wmbus.py tests/test_wmbus_port.py`
 
 ## Danksagung
 
-* [a-culfw](https://github.com/heliflieger/a-culfw) und die FHEM-Community
+* [a-culfw](https://github.com/heliflieger/a-culfw) und die FHEM-Community, insbesondere kaihs für `WMBus.pm`
 * [boriswde/maplecun-splitproxy](https://hub.docker.com/r/boriswde/maplecun-splitproxy)
-* [wmbusmeters](https://github.com/wmbusmeters/wmbusmeters)
+* [wmbusmeters](https://github.com/wmbusmeters/wmbusmeters) – Testtelegramme und erwartete Werte
 
 ## Lizenz
 
-MIT
+GPL-2.0-only (bis Version 0.5.0: MIT). Herkunft der portierten Teile und der Testdaten: [NOTICE.md](NOTICE.md).

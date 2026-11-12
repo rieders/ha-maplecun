@@ -74,6 +74,9 @@
           "meter_id": "Meter ID",
           "name": "Name",
           "key": "AES key (encrypted meters only)"
+        },
+        "data_description": {
+          "key": "AES-128 key of the meter (32 hex characters). Used for security modes 5 and 7 and for encrypted extended link layer (Kamstrup). Leave empty for unencrypted meters."
         }
       },
       "remove_meter": {
@@ -143,6 +146,9 @@
         "data": {
           "name": "Name",
           "key": "AES key (empty = unencrypted)"
+        },
+        "data_description": {
+          "key": "AES-128 key of the meter (32 hex characters). Used for security modes 5 and 7 and for encrypted extended link layer (Kamstrup). Leave empty for unencrypted meters."
         }
       }
     },

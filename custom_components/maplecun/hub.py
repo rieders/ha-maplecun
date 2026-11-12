@@ -406,7 +406,10 @@ class MapleCunHub:
             frame, rssi = wmbus.parse_cul_line(line)
             tele = wmbus.decode(frame, {k: v for k, v in self.meters.items() if v})
         except wmbus.WMBusError as err:
-            _LOGGER.debug("Modul %s: Telegramm verworfen (%s): %s", mod.module_id, err, line)
+            if err.meter_id in self.meters:
+                _LOGGER.warning("Zähler %s: %s", err.meter_id, err)
+            else:
+                _LOGGER.debug("Modul %s: Telegramm verworfen (%s): %s", mod.module_id, err, line)
             return
         tele.rssi = rssi
         mid = tele.meter_id
