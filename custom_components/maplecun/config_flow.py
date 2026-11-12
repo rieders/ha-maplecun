@@ -280,18 +280,16 @@ class MapleCunOptionsFlow(OptionsFlow):
                 meters[meter_id] = {CONF_NAME: user_input.get(CONF_NAME, "").strip(), CONF_KEY: key.upper()}
                 return self._save(**{CONF_METERS: meters})
 
-        hub = getattr(self.config_entry, "runtime_data", None)
-        seen: dict = hub.seen if hub is not None else {}
-        rows = sorted(seen.items(), key=lambda kv: (kv[1].get("rssi") is None, -(kv[1].get("rssi") or -999)))
+        # Vorschläge: seit dem Start gehörte, noch nicht angelegte Zähler (nur Arbeitsspeicher)
+        hub = self._hub()
+        heard = hub.heard_unconfigured() if hub is not None else []
         options = [
             SelectOptionDict(
                 value=mid,
-                label=f"{mid} – {info.get('manufacturer', '?')} {info.get('type', '')}"
-                + (f", {info['rssi']} dBm" if info.get("rssi") is not None else "")
-                + (", verschlüsselt" if info.get("encrypted") else "")
-                + (", über Netzwerkknoten" if info.get("relayed") else ""),
+                label=f"{mid} – {info.get('type') or '?'}"
+                + (f", {info['rssi']} dBm" if info.get("rssi") is not None else ""),
             )
-            for mid, info in rows
+            for mid, info in heard
             if mid not in meters
         ]
         schema = vol.Schema(

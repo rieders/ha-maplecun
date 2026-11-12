@@ -606,8 +606,14 @@ def _parse_afl(afl: bytes) -> _Afl:
     return out
 
 
-def decode(tele: bytes, keys: dict[str, bytes] | None = None, _depth: int = 0) -> Telegram:
-    """Telegramm (ohne CRCs, beginnend mit L) auswerten."""
+def decode(
+    tele: bytes, keys: dict[str, bytes] | None = None, _depth: int = 0, *, header_only: bool = False
+) -> Telegram:
+    """Telegramm (ohne CRCs, beginnend mit L) auswerten.
+
+    header_only: nur Kopfdaten (Hersteller, ID, Typ, Weiterleitung) – nichts
+    entschlüsseln, keine Messwerte dekodieren (für nicht angelegte Zähler).
+    """
     if len(tele) < 11:
         raise WMBusError("Telegramm zu kurz")
     man_raw = tele[2:4]
@@ -625,7 +631,7 @@ def decode(tele: bytes, keys: dict[str, bytes] | None = None, _depth: int = 0) -
         # ab Offset 18 steht das komplette Zählertelegramm. Dessen L-Feld stimmt nicht
         # immer, daher bis zum Ende des äußeren Telegramms auswerten. Die Absender-ID
         # des Knotens wechselt mit jedem Telegramm und wird verworfen.
-        sub = decode(tele[18:], keys, _depth + 1)
+        sub = decode(tele[18:], keys, _depth + 1, header_only=header_only)
         sub.relayed = True
         return sub
 
@@ -645,6 +651,8 @@ def decode(tele: bytes, keys: dict[str, bytes] | None = None, _depth: int = 0) -
             rest = buf[p:]
             if sn_int >> 29:                 # verschlüsselt (AES-128-CTR)
                 t.encrypted = True
+                if header_only:
+                    return t
                 key = key_for(t.meter_id)
                 if key is None:
                     return t
@@ -697,13 +705,17 @@ def decode(tele: bytes, keys: dict[str, bytes] | None = None, _depth: int = 0) -
         cfg = b"\x00\x00"
         iv_head = b""
     elif ci in (0x7E, 0x7F):
+        if header_only:
+            return t
         raise WMBusError("SML-kodierte Nutzdaten werden nicht unterstützt", t.meter_id)
     else:
         inner = _find_embedded(tele[11:]) if _depth < 2 and ci == tele[10] else None
         if inner is not None:
-            sub = decode(inner, keys, _depth + 1)
+            sub = decode(inner, keys, _depth + 1, header_only=header_only)
             sub.via = t.meter_id
             return sub
+        if header_only:
+            return t
         raise WMBusError(f"CI {ci:02X} wird nicht unterstützt")
 
     if acc is not None:
@@ -715,6 +727,9 @@ def decode(tele: bytes, keys: dict[str, bytes] | None = None, _depth: int = 0) -
     if mode == 7:
         p += 1                               # Konfigurationswort hat 3 Byte
     payload = buf[p:]
+    if header_only:
+        t.encrypted = mode != 0
+        return t
     if mode in (5, 7):
         t.encrypted = True
         key = key_for(t.meter_id)

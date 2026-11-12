@@ -178,7 +178,9 @@ async def test_full(hass: HomeAssistant, mods, caplog):
     assert hub.seen == {}                         # Zähler der Nachbarn werden nicht gespeichert
     from homeassistant.components import persistent_notification as pn
     assert any("neue Geräte" in (n.get("message") or "") for n in pn._async_get_or_create_notifications(hass).values())
-    assert hass.states.get("sensor.maplecun_test_received_meters").state == "0"
+    # Zählerübersicht: fremde Zähler nur mit Kopfdaten, nur im Arbeitsspeicher
+    assert hass.states.get("sensor.maplecun_test_received_meters").state == "2"
+    assert set(hub.heard) == {"52144701", "52143906"}
     assert "Unbekannter Zähler" not in caplog.text   # Diagnose-Log standardmäßig aus
 
     # Gefundene Geräte: nichts übernehmen, Rest ignorieren
@@ -248,6 +250,7 @@ async def test_full(hass: HomeAssistant, mods, caplog):
     await _settle(hass)
     assert "Unbekannter Zähler 52143906" in caplog.text
     assert entry.runtime_data.discovered == {} and "52143906" not in entry.runtime_data.seen
+    assert "52143906" not in entry.runtime_data.meter_keys
 
     # Zähler entfernen -> Gerät weg
     r = await hass.config_entries.options.async_init(entry.entry_id)

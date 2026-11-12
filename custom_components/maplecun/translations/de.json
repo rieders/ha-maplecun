@@ -69,7 +69,7 @@
       },
       "add_meter": {
         "title": "Wireless-M-Bus-Zähler",
-        "description": "Die ID steht auf dem Zähler bzw. in FHEM (z. B. WMBUS_LSE_52143909 → 52143909). Telegramme anderer Zähler werden verworfen; zum Suchen der IDs vorübergehend „Unbekannte Zähler ins Log schreiben“ unter Einstellungen aktivieren.",
+        "description": "Die ID steht auf dem Zähler bzw. in FHEM (z. B. WMBUS_LSE_52143909 → 52143909). Die Auswahlliste schlägt seit dem Start gehörte, noch nicht angelegte Zähler vor (stärkstes Signal zuerst, derzeit {count}); freie Eingabe ist möglich. Von fremden Zählern werden nur Kopfdaten im Arbeitsspeicher gehalten.",
         "data": {
           "meter_id": "Zähler-ID",
           "name": "Name",
@@ -202,8 +202,17 @@
       "power_factor": {
         "name": "Leistungsfaktor"
       },
-      "last_raw": {
-        "name": "Rohdaten Modul {module}"
+      "last_raw_1": {
+        "name": "Rohdaten Modul 1"
+      },
+      "last_raw_2": {
+        "name": "Rohdaten Modul 2"
+      },
+      "last_raw_3": {
+        "name": "Rohdaten Modul 3"
+      },
+      "last_raw_4": {
+        "name": "Rohdaten Modul 4"
       },
       "seen_meters": {
         "name": "Empfangene Zähler"

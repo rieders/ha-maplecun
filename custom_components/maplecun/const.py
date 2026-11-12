@@ -62,6 +62,9 @@ RECONNECT_DELAY = 5
 MODE_RETRY_DELAY = 30       # a-culfw: "brc" bei schon aktivem Modus schaltet ihn AUS -> erneut senden
 STORAGE_VERSION = 1
 SEEN_MAX = 200
+HEARD_MAX = 1000          # Zählerübersicht (nur Arbeitsspeicher)
+HEARD_LIST_MAX = 200      # davon im Attribut "weitere"
+RAW_STATE_MAX = 255       # HA-Grenze für Zustände
 
 
 def signal_connection(entry_id: str) -> str:

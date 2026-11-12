@@ -69,7 +69,7 @@
       },
       "add_meter": {
         "title": "Wireless M-Bus meter",
-        "description": "The ID is printed on the meter or shown in FHEM (e.g. WMBUS_LSE_52143909 → 52143909). Telegrams of other meters are discarded; to find IDs, temporarily enable “Write unknown meters to the log” under Settings.",
+        "description": "The ID is printed on the meter or shown in FHEM (e.g. WMBUS_LSE_52143909 → 52143909). The list suggests meters heard since startup that are not set up yet (strongest signal first, currently {count}); you can also type an ID. Only header data of other meters is kept, in memory only.",
         "data": {
           "meter_id": "Meter ID",
           "name": "Name",
@@ -202,8 +202,17 @@
       "power_factor": {
         "name": "Power factor"
       },
-      "last_raw": {
-        "name": "Raw data module {module}"
+      "last_raw_1": {
+        "name": "Raw data module 1"
+      },
+      "last_raw_2": {
+        "name": "Raw data module 2"
+      },
+      "last_raw_3": {
+        "name": "Raw data module 3"
+      },
+      "last_raw_4": {
+        "name": "Raw data module 4"
       },
       "seen_meters": {
         "name": "Received meters"

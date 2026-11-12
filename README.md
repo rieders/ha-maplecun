@@ -8,7 +8,7 @@ Custom Integration, die alle Funkmodule eines **[MapleCUN](https://wiki.fhem.de/
 | **433 MHz** | Revolt NC-5462 Energiemesser, Intertechno-Steckdosen (Tristate), Thermometer (Mebus, GT-WT-02, KW9010, NX7674) |
 | **Nur überwachen** | z. B. ein HomeMatic-/MAX!-Modul, das weiter von FHEM bedient wird – nur Verbindungsstatus |
 
-Jedes Modul bekommt Diagnose-Sensoren für Verbindung, **letzten Empfang** und **Telegramme heute**; dazu **„Empfangene Zähler“** mit den eingerichteten Wireless-M-Bus-Zählern.
+Jedes Modul bekommt Diagnose-Sensoren für Verbindung, **letzten Empfang** und **Telegramme heute** sowie einen (standardmäßig deaktivierten) Sensor **„Rohdaten Modul N“**; dazu die Zählerübersicht **„Empfangene Zähler“** (siehe unten).
 
 ## Voraussetzung: maplecun-splitproxy
 
@@ -56,23 +56,117 @@ Der MapleCUN hört alles in Funkreichweite – Zähler, Fernbedienungen und Ener
 3. Unter **Konfigurieren → Einstellungen** lässt sich je Gerätetyp festlegen, was ohne Nachfrage eingerichtet wird
    (Vorgabe: Revolt ja, Intertechno nein) und ignorierte Geräte wieder einblenden.
 
-Wireless-M-Bus-Zähler werden **nicht** gesammelt: Telegramme von Zählern, deren ID nicht eingetragen ist, werden verworfen und nirgends gespeichert.
+Wireless-M-Bus-Zähler werden **nicht** gesammelt: Von Zählern, deren ID nicht eingetragen ist, werden keine Messwerte dekodiert und nichts gespeichert. Nur ihre Kopfdaten (ID, Hersteller, Typ, Signalstärke) stehen bis zum nächsten Neustart in der [Zählerübersicht](#zählerübersicht) und als Vorschläge unter **Zähler hinzufügen**.
 
 Übernommene Geräte lassen sich auf ihrer Geräteseite wieder löschen.
 
 ### Wireless-M-Bus-Zähler
 
 Zähler-IDs unter **Konfigurieren → Wireless-M-Bus-Zähler hinzufügen** eintragen. Die ID steht auf dem Gerät bzw. in FHEM im Namen: `WMBUS_LSE_52143909_26_7` → `52143909`.
-Zum Suchen der eigenen IDs lässt sich unter **Konfigurieren → Einstellungen** vorübergehend **„Unbekannte Zähler ins Log schreiben“** einschalten (nur ID, Typ, RSSI; Vorgabe aus).
+Beim Hinzufügen schlägt eine Auswahlliste die seit dem Start gehörten, noch nicht angelegten IDs vor (ID, Typ, RSSI, stärkstes Signal zuerst – der eigene Zähler ist meist der nächste); freie Eingabe bleibt möglich.
+Alternativ lässt sich unter **Konfigurieren → Einstellungen** vorübergehend **„Unbekannte Zähler ins Log schreiben“** einschalten (nur ID, Typ, RSSI; Vorgabe aus).
 Welches Modul Wireless M-Bus empfängt und in welchem Modus (S, T, C), steht unter **Konfigurieren → Funkmodule**; der Modus wird beim Verbinden per `brs`/`brt`/`brc` gesetzt.
 
 Viele Zähler senden nur ein- bis wenige Male am Tag – Geduld. Die Sensoren entstehen beim ersten Telegramm nach dem Eintragen und behalten ihren Wert über Neustarts:
 
 * **Wasser** (warm/kalt): Zählerstand in m³ (`total_increasing`, direkt für das **Energie-Dashboard**)
 * **Heizkostenverteiler**: Verbrauchseinheiten (dimensionslos, `total_increasing`, am Stichtag zurückgesetzt)
-* Diagnose: Stichtagswert und Stichtag, Monatsendwert und Monatsende, Signalstärke, zuletzt empfangen
+* Diagnose: Stichtagswert und Stichtag, Monatsendwert und Monatsende, Signalstärke, zuletzt empfangen (Zeitstempel, bleibt über Neustarts erhalten)
 
 Name und AES-Schlüssel (verschlüsselte Zähler) unter **Konfigurieren → Zähler bearbeiten**; verschlüsselte Telegramme ohne Schlüssel werden nur geloggt.
+
+### Zählerübersicht
+
+Der Diagnose-Sensor **„Empfangene Zähler“** (am Gerät „MapleCUN …“) zeigt als Zustand die Anzahl der seit dem Start empfangenen unterschiedlichen Zähler. Zwei Attribute enthalten die Listen:
+
+* `eigene` – alle angelegten Zähler, auch noch nie empfangene (`letzter_empfang` leer)
+* `weitere` – nicht angelegte Zähler, stärkstes Signal zuerst, höchstens 200
+
+Jeder Eintrag hat `id`, `name`, `hersteller`, `typ`, `rssi`, `modul`, `netzwerkknoten` (true/false), `letzter_empfang` (ISO 8601) und `telegramme_heute`.
+Für nicht angelegte Zähler werden nur die Kopfdaten ausgewertet (keine Entschlüsselung, keine Messwerte). Die Liste `weitere` lebt nur im Arbeitsspeicher, wird weder in die Konfiguration noch auf die Platte geschrieben und beginnt nach einem Neustart leer. Beide Attribute sind vom Recorder ausgenommen und landen nicht in der Datenbank.
+
+**Dashboard-Karte** (Markdown-Karte; die Entity-ID in der zweiten Zeile ggf. anpassen – zu finden unter Einstellungen → Entitäten → „Empfangene Zähler“, Vorgabe `sensor.maplecun_<IP>_empfangene_zahler`):
+
+```yaml
+type: markdown
+title: Wireless-M-Bus-Zähler
+content: |-
+  {%- set sensor = 'sensor.maplecun_192_168_1_228_empfangene_zahler' -%}
+  {%- set schwelle_h = 48 -%}{# eigene Zähler ohne Empfang seit so vielen Stunden hervorheben #}
+  {%- set max_weitere = 30 -%}
+  {%- macro absolut(ts) -%}
+  {{ as_timestamp(ts) | timestamp_custom('%d.%m.%Y %H:%M') if ts else 'nie' }}
+  {%- endmacro -%}
+  {%- macro relativ(ts) -%}
+  {%- if ts -%}
+  {%- set m = ((now() - as_datetime(ts)).total_seconds() / 60) | int -%}
+  {%- set h = (m / 60) | int -%}
+  {%- set d = (m / 1440) | int -%}
+  {%- if m < 1 -%}gerade eben
+  {%- elif m < 60 -%}vor {{ m }} {{ 'Minute' if m == 1 else 'Minuten' }}
+  {%- elif h < 48 -%}vor {{ h }} {{ 'Stunde' if h == 1 else 'Stunden' }}
+  {%- else -%}vor {{ d }} Tagen{%- endif -%}
+  {%- else -%}–{%- endif -%}
+  {%- endmacro -%}
+  {%- macro dbm(v) -%}{{ v ~ ' dBm' if v is not none else '–' }}{%- endmacro %}
+  ### Eigene Zähler
+
+  | | ID | Name | Typ | RSSI | Modul | Knoten | Letzter Empfang | | Heute |
+  |---|---|---|---|---|---|---|---|---|---|
+  {%- for z in state_attr(sensor, 'eigene') or [] %}
+  {%- set ts = z.letzter_empfang %}
+  {%- set stumm = not ts or (now() - as_datetime(ts)).total_seconds() > schwelle_h * 3600 %}
+  {%- set b = '**' if stumm else '' %}
+  | {{ '⚠️' if stumm else '✅' }} | {{ b }}{{ z.id }}{{ b }} | {{ b }}{{ z.name }}{{ b }} | {{ z.typ or '–' }} | {{ dbm(z.rssi) }} | {{ z.modul or '–' }} | {{ 'ja' if z.netzwerkknoten else 'nein' }} | {{ b }}{{ absolut(ts) }}{{ b }} | {{ b }}{{ relativ(ts) }}{{ b }} | {{ z.telegramme_heute }} |
+  {%- endfor %}
+
+  ⚠️ = seit mehr als {{ schwelle_h }} Stunden (oder noch nie) empfangen
+
+  ### Weitere Zähler in Reichweite ({{ (state_attr(sensor, 'weitere') or []) | count }})
+
+  | ID | Hersteller | Typ | RSSI | Modul | Knoten | Letzter Empfang | | Heute |
+  |---|---|---|---|---|---|---|---|---|
+  {%- for z in (state_attr(sensor, 'weitere') or [])[:max_weitere] %}
+  | {{ z.id }} | {{ z.hersteller }} | {{ z.typ }} | {{ dbm(z.rssi) }} | {{ z.modul }} | {{ 'ja' if z.netzwerkknoten else 'nein' }} | {{ absolut(z.letzter_empfang) }} | {{ relativ(z.letzter_empfang) }} | {{ z.telegramme_heute }} |
+  {%- endfor %}
+```
+
+**Benachrichtigung, wenn ein angelegter Zähler länger als 48 Stunden nichts gesendet hat** (Einstellungen → Automatisierungen → neu → ⋮ → In YAML bearbeiten; Entity-ID und Benachrichtigungsdienst anpassen):
+
+```yaml
+alias: Wireless-M-Bus-Zähler meldet sich nicht
+description: Angelegter Zähler seit mehr als 48 Stunden ohne Telegramm
+mode: single
+triggers:
+  - trigger: template
+    value_template: >-
+      {%- set ns = namespace(n=0) -%}
+      {%- for z in state_attr('sensor.maplecun_192_168_1_228_empfangene_zahler', 'eigene') or [] -%}
+        {%- if z.letzter_empfang and now() - as_datetime(z.letzter_empfang) > timedelta(hours=48) -%}
+          {%- set ns.n = ns.n + 1 -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ ns.n > 0 }}
+actions:
+  - action: notify.notify
+    data:
+      title: Zähler ohne Empfang
+      message: |-
+        {%- for z in state_attr('sensor.maplecun_192_168_1_228_empfangene_zahler', 'eigene') or [] -%}
+          {%- if z.letzter_empfang and now() - as_datetime(z.letzter_empfang) > timedelta(hours=48) %}
+        {{ z.name }} ({{ z.id }}): zuletzt {{ as_timestamp(z.letzter_empfang) | timestamp_custom('%d.%m.%Y %H:%M') }}
+          {%- endif -%}
+        {%- endfor %}
+```
+
+Der Template-Trigger wird jede Minute neu ausgewertet und löst aus, sobald der erste Zähler die Schwelle überschreitet (nicht erneut für jeden weiteren, solange einer stumm ist). Noch nie empfangene Zähler werden ausgelassen.
+Für einen einzelnen Zähler geht es auch mit seinem Diagnose-Sensor „Zuletzt empfangen“:
+`{{ now() - states('sensor.warmwasser_bad_zuletzt_empfangen') | as_datetime > timedelta(hours=48) }}`
+
+### Rohdaten
+
+**„Rohdaten Modul N“** zeigt die letzte Rohzeile eines Moduls (433 MHz: nicht ausgewertete Zeilen; Wireless M-Bus: jede Telegrammzeile). Der Zustand ist auf 255 Zeichen gekürzt (Grenze von Home Assistant), die vollständige Zeile steht im Attribut `line` (nicht aufgezeichnet).
+Die Sensoren sind standardmäßig deaktiviert. Bei Wireless-M-Bus-Modulen laufen dort **auch Telegramme fremder Zähler** durch und landen – gekürzt – im Verlauf; nur zur Fehlersuche einschalten.
 
 ### Thermometer (433 MHz)
 

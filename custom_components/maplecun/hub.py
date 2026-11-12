@@ -41,6 +41,7 @@ from .const import (
     RECONNECT_DELAY,
     ROLE_INIT,
     ROLE_OFF,
+    HEARD_MAX,
     ROLE_RF433,
     SEEN_MAX,
     STORAGE_VERSION,
@@ -110,6 +111,9 @@ class MapleCunHub:
         self.discovered: dict[str, dict] = {}    # "kind:id" -> Info, noch nicht übernommen
         self.ignored: set[str] = set()
         self.legacy_revolts: list[str] = []      # aus Version 0.1/0.2 (Speicher)
+        # Seit dem Start gehörte Zähler (eigene und fremde), nur Kopfdaten, nur im
+        # Arbeitsspeicher – wird nie gespeichert und beginnt nach einem Neustart leer
+        self.heard: dict[str, dict] = {}
 
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{self.entry_id}")
         self._last_energy: dict[str, tuple[float, float]] = {}
@@ -380,6 +384,8 @@ class MapleCunHub:
     @callback
     def _handle_line(self, mod: Module, line: str) -> None:
         if mod.role in WMBUS_ROLES and line.startswith("b"):
+            # Rohdaten-Sensor (standardmäßig aus) zeigt bei wMBus jede Telegrammzeile
+            async_dispatcher_send(self.hass, signal_raw(self.entry_id, mod.module_id), line)
             self._handle_wmbus(mod, line)
             return
         if mod.role == ROLE_RF433:
@@ -404,22 +410,30 @@ class MapleCunHub:
     def _handle_wmbus(self, mod: Module, line: str) -> None:
         try:
             frame, rssi = wmbus.parse_cul_line(line)
+            # Zuerst nur die Kopfdaten: von fremden Zählern wird nichts entschlüsselt
+            # oder dekodiert
+            head = wmbus.decode(frame, header_only=True)
+        except wmbus.WMBusError as err:
+            _LOGGER.debug("Modul %s: Telegramm verworfen (%s): %s", mod.module_id, err, line)
+            return
+        mid = head.meter_id
+        self._note_heard(mod, head, rssi)
+        if mid not in self.meters:
+            # Fremder Zähler (z. B. Nachbarn): Messwerte verwerfen, nichts speichern
+            if self.log_unknown:
+                _LOGGER.info(
+                    "Unbekannter Zähler %s, Typ 0x%02X (%s), RSSI %s dBm",
+                    mid, head.device_type, head.type_name, rssi if rssi is not None else "?",
+                )
+            return
+        try:
             tele = wmbus.decode(frame, {k: v for k, v in self.meters.items() if v})
         except wmbus.WMBusError as err:
-            if err.meter_id in self.meters:
-                _LOGGER.warning("Zähler %s: %s", err.meter_id, err)
-            else:
-                _LOGGER.debug("Modul %s: Telegramm verworfen (%s): %s", mod.module_id, err, line)
+            _LOGGER.warning("Zähler %s: %s", err.meter_id or mid, err)
             return
         tele.rssi = rssi
         mid = tele.meter_id
         if mid not in self.meters:
-            # Fremder Zähler (z. B. Nachbarn): verwerfen, nichts speichern
-            if self.log_unknown:
-                _LOGGER.info(
-                    "Unbekannter Zähler %s, Typ 0x%02X (%s), RSSI %s dBm",
-                    mid, tele.device_type, tele.type_name, rssi if rssi is not None else "?",
-                )
             return
 
         now = dt_util.utcnow()
@@ -438,7 +452,6 @@ class MapleCunHub:
             oldest = min(self.seen, key=lambda k: self.seen[k]["last_seen"])
             self.seen.pop(oldest, None)
         self._save_later(60)
-        async_dispatcher_send(self.hass, signal_seen(self.entry_id))
 
         if tele.encrypted and not tele.records:
             _LOGGER.warning("Zähler %s sendet verschlüsselt – bitte AES-Schlüssel eintragen", mid)
@@ -454,6 +467,45 @@ class MapleCunHub:
             self._save_later(1)
             async_dispatcher_send(self.hass, signal_meter_new(self.entry_id), mid, tele, new_keys, values)
         async_dispatcher_send(self.hass, signal_meter(self.entry_id, mid), values)
+
+    @callback
+    def _note_heard(self, mod: Module, head: wmbus.Telegram, rssi: float | None) -> None:
+        """Kopfdaten eines empfangenen Zählers für die Übersicht merken (nur RAM)."""
+        now = dt_util.now()
+        day = now.toordinal()
+        info = self.heard.get(head.meter_id)
+        if info is None:
+            if len(self.heard) >= HEARD_MAX:
+                oldest = min(
+                    (k for k in self.heard if k not in self.meters),
+                    key=lambda k: self.heard[k]["last_seen"], default=None,
+                )
+                if oldest is not None:
+                    self.heard.pop(oldest)
+            info = self.heard[head.meter_id] = {"count_today": 0, "day": day}
+        if info["day"] != day:
+            info["day"], info["count_today"] = day, 0
+        info.update(
+            manufacturer=head.manufacturer,
+            type=head.type_name,
+            device_type=head.device_type,
+            rssi=rssi,
+            module=mod.module_id,
+            relayed=head.relayed,
+            encrypted=head.encrypted,
+            last_seen=now.isoformat(timespec="seconds"),
+        )
+        info["count_today"] += 1
+        async_dispatcher_send(self.hass, signal_seen(self.entry_id))
+
+    def heard_today(self, info: dict) -> int:
+        return info.get("count_today", 0) if info.get("day") == dt_util.now().toordinal() else 0
+
+    def heard_unconfigured(self) -> list[tuple[str, dict]]:
+        """Gehörte, nicht angelegte Zähler, stärkstes Signal zuerst."""
+        rows = [(mid, info) for mid, info in self.heard.items() if mid not in self.meters]
+        rows.sort(key=lambda kv: (kv[1].get("rssi") is None, -(kv[1].get("rssi") or 0), kv[0]))
+        return rows
 
     # --- Revolt
     @callback

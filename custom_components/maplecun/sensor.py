@@ -31,7 +31,9 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
 
 from . import MapleCunConfigEntry
@@ -42,6 +44,9 @@ from .const import (
     CONF_REVOLTS,
     CONF_SENSORS,
     DOMAIN,
+    HEARD_LIST_MAX,
+    MODULE_IDS,
+    RAW_STATE_MAX,
     ROLE_RF433,
     WMBUS_ROLES,
     signal_climate,
@@ -220,6 +225,18 @@ async def async_setup_entry(
             ):
                 dev_reg.async_remove_device(device.id)
 
+    # Diagnose-Entitäten abgeschalteter Module und den einzelnen Rohdaten-Sensor
+    # aus Version 0.1 aus der Registry entfernen (sonst verwaist ohne Namen)
+    ent_reg = er.async_get(hass)
+    stale = {f"{entry.entry_id}_last_raw"} | {
+        f"{entry.entry_id}_{kind}_{mid}"
+        for mid in MODULE_IDS if mid not in hub.modules
+        for kind in ("last_raw", "last_rx", "rx_today", "module")
+    }
+    for ent in er.async_entries_for_config_entry(ent_reg, entry.entry_id):
+        if ent.unique_id in stale:
+            ent_reg.async_remove(ent.entity_id)
+
     # Rohdaten je Modul (Diagnose, standardmäßig aus)
     entities.extend(RawSensor(entry, mid) for mid in sorted(hub.modules))
 
@@ -382,17 +399,24 @@ class RevoltSensor(_Base, RestoreSensor):
 
 
 class RawSensor(_Base):
-    """Diagnose: letzte nicht ausgewertete Zeile eines Moduls."""
+    """Diagnose: letzte Rohzeile eines Moduls.
 
-    _attr_translation_key = "last_raw"
+    433 MHz / Überwachen: nicht ausgewertete Zeilen; Wireless M-Bus: jede Telegrammzeile
+    (auch fremder Zähler – deshalb standardmäßig deaktiviert). Der Zustand ist auf
+    255 Zeichen gekürzt, die vollständige Zeile steht im Attribut "line".
+    """
+
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_entity_registry_enabled_default = False
+    _unrecorded_attributes = frozenset({"line"})
 
     def __init__(self, entry, module_id: str) -> None:
         super().__init__(entry, module_id)
         self._attr_unique_id = f"{entry.entry_id}_last_raw_{module_id}"
-        self._attr_translation_placeholders = {"module": module_id}
+        # feste Übersetzung je Modul ("Rohdaten Modul N"), ohne Platzhalter
+        self._attr_translation_key = f"last_raw_{module_id}"
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
+        self._attr_extra_state_attributes = {"line": None}
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -402,42 +426,97 @@ class RawSensor(_Base):
 
     @callback
     def _update(self, line: str) -> None:
-        self._attr_native_value = line[:255]
+        self._attr_native_value = line[:RAW_STATE_MAX]
+        self._attr_extra_state_attributes = {"line": line}
         self.async_write_ha_state()
 
 
 class SeenMetersSensor(_Base):
-    """Diagnose: Anzahl empfangener Wireless-M-Bus-Zähler (Liste in den Attributen)."""
+    """Diagnose: Zählerübersicht.
+
+    Zustand: Anzahl der seit dem Start empfangenen unterschiedlichen Zähler.
+    Attribute "eigene" (angelegte Zähler) und "weitere" (nicht angelegte, nur
+    Kopfdaten, stärkstes Signal zuerst). Die Daten leben nur im Arbeitsspeicher
+    und sind vom Recorder ausgenommen.
+    """
 
     _attr_translation_key = "seen_meters"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _unrecorded_attributes = frozenset({"meters"})
+    _unrecorded_attributes = frozenset({"eigene", "weitere"})
+    _WRITE_INTERVAL = 10.0
 
     def __init__(self, entry) -> None:
         super().__init__(entry, None)
         self._attr_unique_id = f"{entry.entry_id}_seen_meters"
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
+        self._last_write = 0.0
+        self._unsub_later = None
+        self._known = 0
 
     @property
     def native_value(self) -> int:
-        return len(self._hub.seen)
+        return len(self._hub.heard)
+
+    def _row(self, mid: str, info: dict, name: str) -> dict:
+        return {
+            "id": mid,
+            "name": name,
+            "hersteller": info.get("manufacturer"),
+            "typ": info.get("type"),
+            "rssi": info.get("rssi"),
+            "modul": info.get("module"),
+            "netzwerkknoten": bool(info.get("relayed")),
+            "letzter_empfang": info.get("last_seen"),     # ISO 8601, Ortszeit
+            "telegramme_heute": self._hub.heard_today(info),
+        }
 
     @property
     def extra_state_attributes(self) -> dict:
-        configured = set(self._hub.meters)
-        rows = sorted(self._hub.seen.items(), key=lambda kv: kv[1].get("last_seen", ""), reverse=True)
-        return {
-            "meters": [
-                {"id": mid, **info, "configured": mid in configured} for mid, info in rows[:100]
-            ]
-        }
+        hub = self._hub
+        cfg: dict = self._entry.options.get(CONF_METERS, {})
+        own = []
+        for mid in sorted(hub.meters):
+            # seit dem Start noch nicht gehört: gespeicherte Kopfdaten des eigenen Zählers
+            # (letzter Empfang bleibt so über Neustarts erhalten; leer = nie empfangen)
+            info = hub.heard.get(mid) or hub.seen.get(mid, {})
+            type_name = info.get("type") or ""
+            name = cfg.get(mid, {}).get(CONF_NAME) or f"{type_name or 'Zähler'} {mid}"
+            own.append(self._row(mid, info, name))
+        others = [self._row(mid, info, "") for mid, info in hub.heard_unconfigured()[:HEARD_LIST_MAX]]
+        return {"eigene": own, "weitere": others}
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         self.async_on_remove(
-            async_dispatcher_connect(self.hass, signal_seen(self._entry.entry_id), self.async_write_ha_state)
+            async_dispatcher_connect(self.hass, signal_seen(self._entry.entry_id), self._changed)
         )
+        self.async_on_remove(self._cancel_later)
+
+    @callback
+    def _cancel_later(self) -> None:
+        if self._unsub_later:
+            self._unsub_later()
+            self._unsub_later = None
+
+    @callback
+    def _changed(self) -> None:
+        """Neue Zähler sofort, sonst höchstens alle 10 s schreiben (Attribute sind groß)."""
+        now = time.monotonic()
+        count = len(self._hub.heard)
+        if count != self._known or now - self._last_write >= self._WRITE_INTERVAL:
+            self._write(None)
+        elif self._unsub_later is None:
+            self._unsub_later = async_call_later(
+                self.hass, self._WRITE_INTERVAL - (now - self._last_write), self._write
+            )
+
+    @callback
+    def _write(self, _now) -> None:
+        self._cancel_later()
+        self._known = len(self._hub.heard)
+        self._last_write = time.monotonic()
+        self.async_write_ha_state()
 
 
 # ======================================================================= Thermometer 433 MHz
