@@ -86,7 +86,7 @@ Codes aus FHEM: `list TYPE=IT DEF` → z. B. `FFFF0F0FFF FF F0` = Code, Ein, Aus
 
 ## Technisches
 
-* a-culfw liefert Wireless-M-Bus-Telegramme als `b…` (Rahmen A, mit Block-CRCs) bzw. `bY…` (Rahmen B, auch über zwei CRC-Blöcke) plus ein angehängtes Statusbyte; alle CRCs werden geprüft (CRC-16/EN-13757), Telegramme mit CRC-Fehler verworfen
+* a-culfw liefert Wireless-M-Bus-Telegramme als `b…` (Rahmen A, mit Block-CRCs) bzw. `bY…` (Rahmen B, auch über zwei CRC-Blöcke) plus LQI- und RSSI-Byte (mit `X21`; im FHEM-Log fehlt das RSSI-Byte); alle CRCs werden geprüft (CRC-16/EN-13757), Telegramme mit CRC-Fehler verworfen
 * Der Wireless-M-Bus-Decoder ist eine Portierung von FHEM `WMBus.pm` (siehe [NOTICE.md](NOTICE.md)): OMS-Kurz-/Langheader (CI 7A/72/78), Extended Link Layer (CI 8C/8D/8E/8F, AES-128-CTR), AFL (CI 90), AES-128-CBC Sicherheitsmodus 5 und 7 (Schlüsselableitung per AES-CMAC, MAC-Prüfung), DIF/VIF-Dekodierung mit den vollständigen VIF-Tabellen aus FHEM (inkl. FD/FB, kombinierbarer VIFEs, Klartext-VIF, Easymeter/Kamstrup)
 * Wo `WMBus.pm` von EN 13757 abweicht (Speichernummern aus DIFE, Länge der ELL-Payload-CRC, Reihenfolge von Zeichenketten, Korrekturfaktor-VIFEs), folgt der Port der Norm – belegt mit echten Telegrammen; die Stellen sind im Code markiert
 * Nicht unterstützt: fragmentierte AFL-Telegramme, SML-Nutzdaten (CI 7E/7F), Kamstrup-Compact-Frames (CI 79), herstellerspezifische CI-Felder

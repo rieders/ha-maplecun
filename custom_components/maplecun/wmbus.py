@@ -136,21 +136,22 @@ def parse_cul_line(line: str) -> tuple[bytes, int | None]:
     if len(raw) < 12:
         raise WMBusError("Telegramm zu kurz")
     tele, rest = _strip_format_b(raw) if frame_b else _strip_format_a(raw)
-    return tele, _rssi(rest)
+    return tele, cul_status(rest)[1]
 
 
-def _rssi(rest: bytes) -> float | None:
-    """Von a-culfw angehängtes Statusbyte in dBm (CC1101-Datenblatt).
+def cul_status(rest: bytes) -> tuple[int | None, float | None]:
+    """Bytes hinter dem Telegramm (Länge aus L-Feld und Block-CRCs) -> (LQI, RSSI dBm).
 
-    Üblich ist genau ein Byte (RSSI); ältere Aufzeichnungen haben zwei (LQI, RSSI).
-    0x80 (= -128, kleinster Registerwert) gilt als "kein Wert".
+    a-culfw hängt mit X21 zwei Bytes an: LQI, dann RSSI. Im FHEM-Log fehlt das
+    RSSI-Byte (00_CUL.pm schneidet es ab und hängt "::-64" an), dort bleibt nur LQI.
     """
-    if not rest:
-        return None
-    r = rest[1] if len(rest) >= 2 else rest[0]
-    if r == 0x80:
-        return None
-    return round((r - 256) / 2 - 74 if r >= 128 else r / 2 - 74, 1)
+    if len(rest) > 2:
+        raise WMBusError(f"{len(rest)} unerwartete Bytes hinter dem Telegramm")
+    lqi = rest[0] if rest else None
+    if len(rest) < 2:
+        return lqi, None
+    r = rest[1]
+    return lqi, round((r - 256) / 2 - 74 if r >= 128 else r / 2 - 74, 1)
 
 
 # ---------------------------------------------------------------- Datensätze

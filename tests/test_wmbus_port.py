@@ -117,7 +117,7 @@ def test_frame_b_single_block():
     """PERL: Rahmen B mit nur einem Block (L <= 127); CRC selbst berechnet nach WMBus.pm."""
     tele = bytes.fromhex("314493441234567835087a740000200b6e2701004b6e450100426c5f2ccb086e790000c2086c7f21326cffff046d200b7422")
     body = bytes([len(tele) + 1]) + tele[1:]      # L zählt im Rahmen B die CRC mit
-    raw = body + wmbus.crc16(body).to_bytes(2, "big") + b"\x40"
+    raw = body + wmbus.crc16(body).to_bytes(2, "big") + b"\x80\x40"   # LQI, RSSI
     frame, rssi = wmbus.parse_cul_line("bY" + raw.hex())
     assert frame[1:] == tele[1:] and rssi == -42.0
     assert wmbus.decode(frame).values()["hca"] == 127

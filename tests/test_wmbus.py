@@ -6,7 +6,8 @@ import pytest
 
 from .wmbus_loader import wmbus
 
-# echte Zeilen von a-culfw (MapleCUN), jeweils mit gültigen Block-CRCs und einem angehängten Byte
+# echte Zeilen aus dem FHEM-Log (MapleCUN), mit gültigen Block-CRCs und dem LQI-Byte;
+# das RSSI-Byte hat FHEM (00_CUL.pm) abgeschnitten
 DIRECT_WARM = (
     "b2D446532179929601A06FE067A830000000C13708009004C132865009C1000426C3F3C02BB560000"
     "326CFFFF046D30A31A00413BD45380"
@@ -90,12 +91,28 @@ def test_relayed_inner_length_not_trusted():
 
 
 # ------------------------------------------------------------------ Rohformat
-def test_trailing_byte_not_part_of_telegram():
-    frame, rssi = wmbus.parse_cul_line(DIRECT_WARM)
-    assert frame.hex().endswith("1a00413b")      # Telegramm endet vor CRC und Statusbyte
-    assert rssi is None                          # 0x80 = kein RSSI-Wert
-    _, rssi = wmbus.parse_cul_line(DIRECT_WARM[:-2] + "07")
-    assert rssi == -70.5
+@pytest.mark.parametrize("line", [DIRECT_WARM, RELAYED_HCA])
+def test_trailing_bytes_lqi_rssi(line):
+    """Zeilen aus dem FHEM-Log: nur LQI (0x80 = 128), RSSI dort als '::-64' abgetrennt.
+    Direkt vom MapleCUN (X21): LQI und RSSI; 0x14 -> 20/2 - 74 = -64 dBm."""
+    frame, rssi = wmbus.parse_cul_line(line)
+    assert rssi is None
+    assert wmbus.cul_status(b"\x80") == (128, None)
+    frame2, rssi = wmbus.parse_cul_line(line + "14")
+    assert frame2 == frame and rssi == -64.0
+    assert wmbus.cul_status(b"\x80\x14") == (128, -64.0)
+    frame3, rssi = wmbus.parse_cul_line(line[:-2])        # ohne angehängte Bytes
+    assert frame3 == frame and rssi is None
+    _, rssi = wmbus.parse_cul_line(line + "14::-64")      # FHEM-Anhang wird ignoriert
+    assert rssi == -64.0
+    with pytest.raises(wmbus.WMBusError, match="unerwartete"):
+        wmbus.parse_cul_line(line + "1400")
+
+
+def test_trailing_bytes_not_part_of_telegram():
+    frame, _ = wmbus.parse_cul_line(DIRECT_WARM + "14")
+    assert frame.hex().endswith("1a00413b")      # Telegramm endet vor CRC, LQI und RSSI
+    assert wmbus.cul_status(b"\x80\xF0") == (128, -82.0)   # Wert >= 128: (Wert-256)/2-74
 
 
 def test_frame_b_recognized():
