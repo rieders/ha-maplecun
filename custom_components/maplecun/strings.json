@@ -39,7 +39,7 @@
         "menu_options": {
           "discovered": "Adopt found devices",
           "modules": "Radio modules (ports and roles)",
-          "settings": "Auto-adopt / ignored",
+          "settings": "Settings (auto-adopt, diagnostics)",
           "add_meter": "Add Wireless M-Bus meter",
           "edit_meter": "Edit meter (name, AES key)",
           "remove_meter": "Remove meters",
@@ -69,7 +69,7 @@
       },
       "add_meter": {
         "title": "Wireless M-Bus meter",
-        "description": "{count} received meters not yet configured. The ID is printed on the meter or shown in FHEM (e.g. WMBUS_LSE_52143909 → 52143909).",
+        "description": "The ID is printed on the meter or shown in FHEM (e.g. WMBUS_LSE_52143909 → 52143909). Telegrams of other meters are discarded; to find IDs, temporarily enable “Write unknown meters to the log” under Settings.",
         "data": {
           "meter_id": "Meter ID",
           "name": "Name",
@@ -119,14 +119,17 @@
         }
       },
       "settings": {
-        "title": "Auto-adopt",
-        "description": "Set up newly received devices immediately without asking. Currently ignored: {ignored}.",
+        "title": "Settings",
+        "description": "Set up newly received devices immediately without asking. Currently ignored: {ignored}. Wireless M-Bus meters are never collected automatically: telegrams of meters not configured here are discarded.",
         "data": {
           "auto_revolt": "Revolt energy meters",
           "auto_it": "Intertechno sockets/remotes",
-          "auto_meter": "Wireless M-Bus meters (careful: neighbours' too)",
           "reset_ignored": "Show ignored devices again",
-          "auto_sensor": "433 MHz thermometers (careful: neighbours' too)"
+          "auto_sensor": "433 MHz thermometers (careful: neighbours' too)",
+          "log_unknown_meters": "Write unknown wireless M-Bus meters to the log (ID, type, RSSI only)"
+        },
+        "data_description": {
+          "log_unknown_meters": "Diagnostics for finding your own meter IDs. Nothing is stored. Off by default."
         }
       },
       "edit_meter": {
@@ -249,6 +252,18 @@
       },
       "rx_today": {
         "name": "Received today module {module}"
+      },
+      "volume_month": {
+        "name": "Month-end value"
+      },
+      "hca_month": {
+        "name": "Month-end value"
+      },
+      "month_date": {
+        "name": "Month end"
+      },
+      "meter_last_received": {
+        "name": "Last received"
       }
     }
   }

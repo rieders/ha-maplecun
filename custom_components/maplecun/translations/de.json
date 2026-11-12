@@ -39,7 +39,7 @@
         "menu_options": {
           "discovered": "Gefundene Geräte übernehmen",
           "modules": "Funkmodule (Ports und Aufgaben)",
-          "settings": "Automatisch übernehmen / Ignorierte",
+          "settings": "Einstellungen (automatisch übernehmen, Diagnose)",
           "add_meter": "Wireless-M-Bus-Zähler hinzufügen",
           "edit_meter": "Zähler bearbeiten (Name, AES-Schlüssel)",
           "remove_meter": "Zähler entfernen",
@@ -69,7 +69,7 @@
       },
       "add_meter": {
         "title": "Wireless-M-Bus-Zähler",
-        "description": "{count} empfangene, noch nicht eingerichtete Zähler. Die ID steht auf dem Zähler bzw. in FHEM (z. B. WMBUS_LSE_52143909 → 52143909).",
+        "description": "Die ID steht auf dem Zähler bzw. in FHEM (z. B. WMBUS_LSE_52143909 → 52143909). Telegramme anderer Zähler werden verworfen; zum Suchen der IDs vorübergehend „Unbekannte Zähler ins Log schreiben“ unter Einstellungen aktivieren.",
         "data": {
           "meter_id": "Zähler-ID",
           "name": "Name",
@@ -119,14 +119,17 @@
         }
       },
       "settings": {
-        "title": "Automatisch übernehmen",
-        "description": "Neu empfangene Geräte direkt einrichten, ohne Nachfrage. Aktuell ignoriert: {ignored}.",
+        "title": "Einstellungen",
+        "description": "Neu empfangene Geräte direkt einrichten, ohne Nachfrage. Aktuell ignoriert: {ignored}. Wireless-M-Bus-Zähler werden nie automatisch gesammelt: Telegramme nicht eingerichteter Zähler werden verworfen.",
         "data": {
           "auto_revolt": "Revolt-Energiemesser",
           "auto_it": "Intertechno-Steckdosen/Fernbedienungen",
-          "auto_meter": "Wireless-M-Bus-Zähler (Vorsicht: auch die der Nachbarn)",
           "reset_ignored": "Ignorierte Geräte wieder anzeigen",
-          "auto_sensor": "433-MHz-Thermometer (Vorsicht: auch die der Nachbarn)"
+          "auto_sensor": "433-MHz-Thermometer (Vorsicht: auch die der Nachbarn)",
+          "log_unknown_meters": "Unbekannte Wireless-M-Bus-Zähler ins Log schreiben (nur ID, Typ, RSSI)"
+        },
+        "data_description": {
+          "log_unknown_meters": "Diagnose, um die eigenen Zähler-IDs zu finden. Es wird nichts gespeichert. Standardmäßig aus."
         }
       },
       "edit_meter": {
@@ -249,6 +252,18 @@
       },
       "rx_today": {
         "name": "Empfangen heute Modul {module}"
+      },
+      "volume_month": {
+        "name": "Monatsendwert"
+      },
+      "hca_month": {
+        "name": "Monatsendwert"
+      },
+      "month_date": {
+        "name": "Monatsende"
+      },
+      "meter_last_received": {
+        "name": "Zuletzt empfangen"
       }
     }
   }

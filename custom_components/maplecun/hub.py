@@ -19,6 +19,7 @@ from .const import (
     CONF_INIT,
     CONF_IT_DEVICES,
     CONF_KEY,
+    CONF_LOG_UNKNOWN,
     CONF_METERS,
     CONF_MODULES,
     CONF_NAME,
@@ -36,6 +37,7 @@ from .const import (
     KIND_METER,
     KIND_REVOLT,
     KIND_SENSOR,
+    MODE_RETRY_DELAY,
     RECONNECT_DELAY,
     ROLE_INIT,
     ROLE_OFF,
@@ -70,6 +72,7 @@ class Module:
     rx_count: int = 0                 # Zeilen seit Mitternacht
     rx_day: int = 0
     rx_notified: float = 0.0
+    mode_retry: float = -1e9          # letztes erneutes Setzen nach "OFF" (monotonic)
     writer: asyncio.StreamWriter | None = None
     task: asyncio.Task | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -86,6 +89,7 @@ class MapleCunHub:
         opts = entry.options
         self.init_mode: bool = opts.get(CONF_INIT, True)
         self.auto: dict[str, bool] = {**DEFAULT_AUTO, **opts.get(CONF_AUTO, {})}
+        self.log_unknown: bool = opts.get(CONF_LOG_UNKNOWN, False)
         self.modules: dict[str, Module] = {
             mid: Module(mid, int(cfg["port"]), cfg[CONF_ROLE])
             for mid, cfg in entry.data[CONF_MODULES].items()
@@ -102,7 +106,7 @@ class MapleCunHub:
 
         # Laufzeitdaten (gespeichert)
         self.meter_keys: dict[str, list[str]] = {}
-        self.seen: dict[str, dict] = {}          # alle gehörten Wireless-M-Bus-Zähler
+        self.seen: dict[str, dict] = {}          # eingerichtete Zähler: Hersteller, Typ, RSSI …
         self.discovered: dict[str, dict] = {}    # "kind:id" -> Info, noch nicht übernommen
         self.ignored: set[str] = set()
         self.legacy_revolts: list[str] = []      # aus Version 0.1/0.2 (Speicher)
@@ -117,11 +121,12 @@ class MapleCunHub:
         data = await self._store.async_load() or {}
         self.legacy_revolts = list(data.get("revolts", []))
         self.meter_keys = {k: list(v) for k, v in data.get("meter_keys", {}).items() if k in self.meters}
-        self.seen = data.get("seen", {})
-        self.ignored = set(data.get("ignored", []))
+        # Fremde Zähler (Nachbarn) werden nicht gespeichert – auch keine Altbestände
+        self.seen = {k: v for k, v in data.get("seen", {}).items() if k in self.meters}
+        self.ignored = {k for k in data.get("ignored", []) if not k.startswith(f"{KIND_METER}:")}
         self.discovered = {
             k: v for k, v in data.get("discovered", {}).items()
-            if k not in self.ignored and not self.is_configured(k)
+            if k not in self.ignored and not self.is_configured(k) and not k.startswith(f"{KIND_METER}:")
         }
         for mod in self.modules.values():
             mod.task = self.hass.async_create_background_task(
@@ -183,8 +188,7 @@ class MapleCunHub:
                 async_dispatcher_send(self.hass, signal_connection(self.entry_id))
                 _LOGGER.info("Modul %s verbunden (%s:%s, %s)", mod.module_id, self.host, mod.port, mod.role)
                 if self.init_mode:
-                    for cmd in ROLE_INIT.get(mod.role, ()):
-                        await self.async_send(mod.module_id, cmd)
+                    await self._async_init_module(mod)
                 while True:
                     raw = await reader.readline()
                     if not raw:
@@ -216,6 +220,32 @@ class MapleCunHub:
         if first or time.monotonic() - mod.rx_notified > 60:
             mod.rx_notified = time.monotonic()
             async_dispatcher_send(self.hass, signal_rx(self.entry_id))
+
+    async def _async_init_module(self, mod: Module) -> None:
+        for cmd in ROLE_INIT.get(mod.role, ()):
+            await self.async_send(mod.module_id, cmd)
+
+    @callback
+    def _mode_switched_off(self, mod: Module) -> None:
+        """a-culfw schaltet bei "brc" usw. um: war der Modus schon aktiv, ist er jetzt aus.
+
+        Einmal erneut setzen; kommt kurz darauf wieder OFF, nur warnen (keine Schleife).
+        """
+        if not self.init_mode:
+            return
+        now = time.monotonic()
+        if now - mod.mode_retry < MODE_RETRY_DELAY:
+            _LOGGER.warning("Modul %s meldet wiederholt OFF – Empfangsmodus bitte prüfen", mod.module_id)
+            return
+        mod.mode_retry = now
+        _LOGGER.info("Modul %s meldet OFF, setze Empfangsmodus erneut", mod.module_id)
+        self.hass.async_create_task(self._async_retry_mode(mod))
+
+    async def _async_retry_mode(self, mod: Module) -> None:
+        try:
+            await self._async_init_module(mod)
+        except (OSError, ConnectionError) as err:
+            _LOGGER.debug("Modul %s: Empfangsmodus nicht gesetzt: %s", mod.module_id, err)
 
     async def async_send(self, module_id: str, command: str) -> None:
         mod = self.modules.get(module_id)
@@ -282,7 +312,7 @@ class MapleCunHub:
         rssi = f", {info['rssi']} dBm" if info.get("rssi") is not None else ""
         if kind == KIND_METER:
             extra = ", verschlüsselt" if info.get("encrypted") else ""
-            via = f", über Repeater {info['via']}" if info.get("via") else ""
+            via = ", über Netzwerkknoten" if info.get("relayed") else ""
             return f"Zähler {ident} – {info.get('manufacturer', '?')} {info.get('type', '')}{rssi}{extra}{via}"
         if kind == KIND_IT:
             return f"Intertechno {ident} (zuletzt Befehl {info.get('cmd', '?')})"
@@ -362,6 +392,9 @@ class MapleCunHub:
             if (reading := climate433.decode(line)) is not None:
                 self._handle_climate(reading)
                 return
+        if line == "OFF" and mod.role in WMBUS_ROLES:
+            self._mode_switched_off(mod)
+            return
         if line in ("OFF", "CMODE", "TMODE", "SMODE") or line.startswith("V "):
             return
         async_dispatcher_send(self.hass, signal_raw(self.entry_id, mod.module_id), line)
@@ -377,25 +410,33 @@ class MapleCunHub:
             return
         tele.rssi = rssi
         mid = tele.meter_id
-        info = {
+        if mid not in self.meters:
+            # Fremder Zähler (z. B. Nachbarn): verwerfen, nichts speichern
+            if self.log_unknown:
+                _LOGGER.info(
+                    "Unbekannter Zähler %s, Typ 0x%02X (%s), RSSI %s dBm",
+                    mid, tele.device_type, tele.type_name, rssi if rssi is not None else "?",
+                )
+            return
+
+        now = dt_util.utcnow()
+        self.seen[mid] = {
             "manufacturer": tele.manufacturer,
             "type": tele.type_name,
+            "device_type": tele.device_type,
             "version": tele.version,
             "encrypted": tele.encrypted,
             "rssi": rssi,
-            "via": tele.via,
+            "relayed": tele.relayed,
             "module": mod.module_id,
+            "last_seen": dt_util.as_local(now).isoformat(timespec="seconds"),
         }
-        self.seen[mid] = {**info, "last_seen": dt_util.now().isoformat(timespec="seconds")}
         if len(self.seen) > SEEN_MAX:
             oldest = min(self.seen, key=lambda k: self.seen[k]["last_seen"])
             self.seen.pop(oldest, None)
         self._save_later(60)
         async_dispatcher_send(self.hass, signal_seen(self.entry_id))
 
-        if mid not in self.meters:
-            self._discover(KIND_METER, mid, info)
-            return
         if tele.encrypted and not tele.records:
             _LOGGER.warning("Zähler %s sendet verschlüsselt – bitte AES-Schlüssel eintragen", mid)
             return
@@ -403,6 +444,7 @@ class MapleCunHub:
         values = tele.values()
         if rssi is not None:
             values["rssi"] = rssi
+        values["last_received"] = now
         new_keys = [k for k in values if k not in self.meter_keys.get(mid, [])]
         if new_keys:
             self.meter_keys.setdefault(mid, []).extend(new_keys)

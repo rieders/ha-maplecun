@@ -98,6 +98,9 @@ REVOLT_SENSORS: tuple[MapleSensorDescription, ...] = (
 
 # ======================================================================= Wireless M-Bus
 
+# Speichernummern: 0 aktuell, 1 Stichtag, 8 (Wasser) bzw. 17 (HKV) Monatsende
+_DUE = 1
+_MONTH_END = {"volume": 8, "hca": 17}
 _GAS_TYPES = {"Gas"}
 _WATER_TYPES = {"Wasser", "Warmwasser", "Kaltwasser"}
 _KEY_RE = re.compile(r"^(?P<q>[a-z_]+?)(?:_t(?P<t>\d+))?(?:_s(?P<s>\d+))?$")
@@ -112,6 +115,11 @@ def meter_description(key: str, type_name: str) -> MapleSensorDescription | None
             native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
             entity_category=EntityCategory.DIAGNOSTIC,
         )
+    if key == "last_received":
+        return MapleSensorDescription(
+            key=key, translation_key="meter_last_received", device_class=SensorDeviceClass.TIMESTAMP,
+            entity_category=EntityCategory.DIAGNOSTIC,
+        )
     if key == "datetime":
         return MapleSensorDescription(
             key=key, translation_key="meter_time", device_class=SensorDeviceClass.TIMESTAMP,
@@ -121,35 +129,46 @@ def meter_description(key: str, type_name: str) -> MapleSensorDescription | None
     if not m or m.group("t"):
         return None
     q, storage = m.group("q"), int(m.group("s") or 0)
-    if storage not in (0, 1):
-        return None                      # Monatswerte etc. weglassen
-    due = storage == 1
+    due = storage == _DUE
+    month = storage != 0 and storage in _MONTH_END.values()
+    if storage and not due and not month:
+        return None                      # sonstige Speicher (Halbmonatswerte o. Ä.) weglassen
+    if month and q not in ("date", *(k for k, s in _MONTH_END.items() if s == storage)):
+        return None
+    # Stichtags- und Monatsendwerte sind Diagnose-Sensoren ohne Statistik
+    hist = due or month
+    diag = EntityCategory.DIAGNOSTIC if hist else None
+    suffix = "_due" if due else "_month" if month else ""
 
     if q == "volume":
         dc = SensorDeviceClass.GAS if type_name in _GAS_TYPES else (
             SensorDeviceClass.WATER if type_name in _WATER_TYPES else SensorDeviceClass.VOLUME)
         return MapleSensorDescription(
-            key=key, translation_key="volume_due" if due else "volume",
+            key=key, translation_key=f"volume{suffix}",
             device_class=dc, native_unit_of_measurement=UnitOfVolume.CUBIC_METERS,
-            state_class=None if due else SensorStateClass.TOTAL_INCREASING,
-            suggested_display_precision=3,
+            state_class=None if hist else SensorStateClass.TOTAL_INCREASING,
+            suggested_display_precision=3, entity_category=diag,
         )
-    if q == "energy":
+    if q == "energy" and not month:
         return MapleSensorDescription(
             key=key, translation_key="energy_due" if due else "meter_energy",
             device_class=SensorDeviceClass.ENERGY, native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
             state_class=None if due else SensorStateClass.TOTAL_INCREASING,
-            suggested_display_precision=1,
+            suggested_display_precision=1, entity_category=diag,
         )
     if q == "hca":
+        # dimensionslos; total_increasing, da am Stichtag auf 0 zurückgesetzt
         return MapleSensorDescription(
-            key=key, translation_key="hca_due" if due else "hca",
-            state_class=None if due else SensorStateClass.TOTAL_INCREASING,
-            native_unit_of_measurement="Einheiten",
+            key=key, translation_key=f"hca{suffix}",
+            state_class=None if hist else SensorStateClass.TOTAL_INCREASING,
+            entity_category=diag,
         )
-    if q == "date" and due:
-        return MapleSensorDescription(key=key, translation_key="due_date", device_class=SensorDeviceClass.DATE)
-    if due:
+    if q == "date" and hist:
+        return MapleSensorDescription(
+            key=key, translation_key="due_date" if due else "month_date",
+            device_class=SensorDeviceClass.DATE, entity_category=EntityCategory.DIAGNOSTIC,
+        )
+    if hist:
         return None
     if q == "power":
         return MapleSensorDescription(

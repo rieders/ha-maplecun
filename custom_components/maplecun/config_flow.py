@@ -26,6 +26,7 @@ from .const import (
     CONF_IT_CODES,
     CONF_IT_DEVICES,
     CONF_KEY,
+    CONF_LOG_UNKNOWN,
     CONF_METER_ID,
     CONF_METERS,
     CONF_MODULES,
@@ -213,19 +214,24 @@ class MapleCunOptionsFlow(OptionsFlow):
         if user_input is not None:
             if user_input.get("reset_ignored") and (hub := self._hub()):
                 await hub.async_reset_ignored()
-            return self._save(**{CONF_AUTO: {
-                KIND_REVOLT: user_input["auto_revolt"],
-                KIND_IT: user_input["auto_it"],
-                KIND_METER: user_input["auto_meter"],
-                KIND_SENSOR: user_input["auto_sensor"],
-            }})
+            return self._save(**{
+                CONF_AUTO: {
+                    KIND_REVOLT: user_input["auto_revolt"],
+                    KIND_IT: user_input["auto_it"],
+                    KIND_METER: False,          # fremde Zähler werden nicht mehr gesammelt
+                    KIND_SENSOR: user_input["auto_sensor"],
+                },
+                CONF_LOG_UNKNOWN: user_input.get(CONF_LOG_UNKNOWN, False),
+            })
         hub = self._hub()
         schema = vol.Schema(
             {
                 vol.Required("auto_revolt", default=auto[KIND_REVOLT]): bool,
                 vol.Required("auto_it", default=auto[KIND_IT]): bool,
                 vol.Required("auto_sensor", default=auto[KIND_SENSOR]): bool,
-                vol.Required("auto_meter", default=auto[KIND_METER]): bool,
+                vol.Optional(
+                    CONF_LOG_UNKNOWN, default=self.config_entry.options.get(CONF_LOG_UNKNOWN, False)
+                ): bool,
                 vol.Optional("reset_ignored", default=False): bool,
             }
         )
@@ -283,7 +289,7 @@ class MapleCunOptionsFlow(OptionsFlow):
                 label=f"{mid} – {info.get('manufacturer', '?')} {info.get('type', '')}"
                 + (f", {info['rssi']} dBm" if info.get("rssi") is not None else "")
                 + (", verschlüsselt" if info.get("encrypted") else "")
-                + (f", über Repeater {info['via']}" if info.get("via") else ""),
+                + (", über Netzwerkknoten" if info.get("relayed") else ""),
             )
             for mid, info in rows
             if mid not in meters

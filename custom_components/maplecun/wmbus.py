@@ -4,7 +4,9 @@ Unterstützt:
   * Rahmenformat A (mit Block-CRCs) und B ("bY…")
   * Kurz- (CI 7A) und Langheader (CI 72), ohne Header (CI 78)
   * Extended Link Layer CI 8C
-  * Qundis-/Repeater-Rahmen, in denen ein komplettes Zählertelegramm eingepackt ist
+  * Über einen Netzwerkknoten weitergeleitete Telegramme (C=C4, CI=A0, z. B. Qundis-
+    Gateways mit "LSE"-Kennung + Bit 15): das innere Zählertelegramm ab Offset 18
+  * Sonstige Repeater-Rahmen, in denen ein komplettes Zählertelegramm eingepackt ist
   * AES-128-CBC (Sicherheitsmodus 5) mit Schlüssel
   * DIF/VIF-Datensätze: Volumen, Energie, Leistung, Durchfluss, Temperaturen,
     HKV-Einheiten, Datum/Uhrzeit u. a.
@@ -47,6 +49,9 @@ DEVICE_TYPES = {
     0x1B: "Raumsensor", 0x31: "Repeater", 0x32: "Repeater", 0x36: "Funkkonverter",
     0x37: "Funkkonverter",
 }
+
+# Speichernummer der Monatsendwerte je Geräteklasse (Stichtag = Speicher 1)
+MONTH_END_STORAGE = {0x06: 8, 0x07: 8, 0x15: 8, 0x16: 8, 0x08: 17}
 
 
 # ---------------------------------------------------------------- Rahmen
@@ -112,12 +117,21 @@ def parse_cul_line(line: str) -> tuple[bytes, int | None]:
     if len(raw) < 12:
         raise WMBusError("Telegramm zu kurz")
     tele, rest = _strip_format_b(raw) if frame_b else _strip_format_a(raw)
-    rssi = None
-    if len(rest) >= 2:
-        # a-culfw (X21) hängt LQI und RSSI an; RSSI -> dBm wie im CC1101-Datenblatt
-        r = rest[1]
-        rssi = round((r - 256) / 2 - 74 if r >= 128 else r / 2 - 74, 1)
-    return tele, rssi
+    return tele, _rssi(rest)
+
+
+def _rssi(rest: bytes) -> float | None:
+    """Von a-culfw angehängtes Statusbyte in dBm (CC1101-Datenblatt).
+
+    Üblich ist genau ein Byte (RSSI); ältere Aufzeichnungen haben zwei (LQI, RSSI).
+    0x80 (= -128, kleinster Registerwert) gilt als "kein Wert".
+    """
+    if not rest:
+        return None
+    r = rest[1] if len(rest) >= 2 else rest[0]
+    if r == 0x80:
+        return None
+    return round((r - 256) / 2 - 74 if r >= 128 else r / 2 - 74, 1)
 
 
 # ---------------------------------------------------------------- Datensätze
@@ -160,10 +174,16 @@ class Telegram:
     records: list[Record] = field(default_factory=list)
     rssi: float | None = None
     via: str | None = None            # ID des Repeaters, falls eingepackt
+    relayed: bool = False             # über Netzwerkknoten (CI A0) empfangen
 
     @property
     def type_name(self) -> str:
         return DEVICE_TYPES.get(self.device_type, f"Typ {self.device_type}")
+
+    @property
+    def month_storage(self) -> int | None:
+        """Speichernummer der Monatsendwerte (8 Wasser, 17 HKV)."""
+        return MONTH_END_STORAGE.get(self.device_type)
 
     def values(self) -> dict[str, object]:
         """Werte je Schlüssel; der erste Datensatz gewinnt."""
@@ -265,12 +285,25 @@ def _bcd(b: bytes) -> int | None:
         return None
 
 
-_DATA_LEN = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 4, 6: 6, 7: 8, 9: 1, 10: 2, 11: 3, 12: 4, 14: 6}
+_DATA_LEN = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 4, 6: 6, 7: 8, 8: 0, 9: 1, 10: 2, 11: 3, 12: 4, 14: 6}
 
 
 def parse_records(data: bytes) -> list[Record]:
-    """DIF/VIF-Datensätze dekodieren (bricht bei Herstellerdaten ab)."""
+    """DIF/VIF-Datensätze dekodieren.
+
+    Endet bei Herstellerdaten (0x0F/0x1F). Ein am Ende abgeschnittener Datensatz
+    (z. B. Füllbytes weitergeleiteter Telegramme) wird verworfen, die bis dahin
+    gelesenen bleiben gültig.
+    """
     records: list[Record] = []
+    try:
+        _parse_records(data, records)
+    except (WMBusError, IndexError):
+        pass
+    return records
+
+
+def _parse_records(data: bytes, records: list[Record]) -> None:
     i = 0
     while i < len(data):
         dif = data[i]
@@ -320,6 +353,9 @@ def parse_records(data: bytes) -> list[Record]:
             quantity, unit, factor = _decode_vif(vif, vifes)
             if vif in (0x7F, 0xFF):
                 quantity, unit, factor = "manufacturer", None, 1
+            elif vifes:
+                # Unbekannte Erweiterung (z. B. 6D+39): nicht mit dem Grundwert verwechseln
+                quantity = f"{quantity}_x{bytes(vifes).hex()}"
 
         # Datenlänge
         if dlen_code == 0x0D:               # variable Länge
@@ -401,6 +437,15 @@ def decode(tele: bytes, keys: dict[str, bytes] | None = None, _depth: int = 0) -
         ci = tele[pos]
         pos += 1
 
+    if ci == 0xA0 and _depth < 2 and len(tele) >= 30 and tele[19] == 0x44:
+        # Über einen Netzwerkknoten weitergeleitet (C=C4, M=65 B2 = "LSE" + Bit 15):
+        # ab Offset 18 steht das komplette Zählertelegramm. Dessen L-Feld stimmt nicht
+        # immer, daher bis zum Ende des äußeren Telegramms auswerten. Die Absender-ID
+        # des Knotens wechselt mit jedem Telegramm und wird verworfen.
+        sub = decode(tele[18:], keys, _depth + 1)
+        sub.relayed = True
+        return sub
+
     if ci == 0x7A:                          # Kurzheader
         acc, st, cfg = tele[pos], tele[pos + 1], tele[pos + 2 : pos + 4]
         pos += 4
@@ -427,6 +472,8 @@ def decode(tele: bytes, keys: dict[str, bytes] | None = None, _depth: int = 0) -
         raise WMBusError(f"CI {ci:02X} wird nicht unterstützt")
 
     t.access_no, t.status = acc, st
+    # Sicherheitsmodus = Bits 8..12 des Konfigurationsworts; übrige Bits (z. B. 0x2000
+    # "synchron") sagen nichts über Verschlüsselung aus
     mode = cfg[1] & 0x1F
     payload = tele[pos:]
     if mode == 5:

@@ -13,6 +13,7 @@ CONF_REVOLTS = "revolts"
 CONF_SENSORS = "climate_sensors"
 CONF_MODEL = "model"
 CONF_AUTO = "auto_add"
+CONF_LOG_UNKNOWN = "log_unknown_meters"
 CONF_METER_ID = "meter_id"
 CONF_KEY = "key"
 CONF_NAME = "name"
@@ -58,6 +59,7 @@ KIND_SENSOR = "sensor"
 DEFAULT_AUTO = {KIND_REVOLT: True, KIND_IT: False, KIND_METER: False, KIND_SENSOR: False}
 
 RECONNECT_DELAY = 5
+MODE_RETRY_DELAY = 30       # a-culfw: "brc" bei schon aktivem Modus schaltet ihn AUS -> erneut senden
 STORAGE_VERSION = 1
 SEEN_MAX = 200
 

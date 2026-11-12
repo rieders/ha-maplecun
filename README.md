@@ -4,11 +4,11 @@ Custom Integration, die alle Funkmodule eines **[MapleCUN](https://wiki.fhem.de/
 
 | Aufgabe eines Moduls | Geräte in Home Assistant |
 |---|---|
-| **Wireless M-Bus C / T / S** | Wasser-, Wärme-, Gaszähler, Heizkostenverteiler (OMS): Zählerstand, Stichtagswert, Stichtag, Signalstärke … – auch über Repeater empfangene und AES-verschlüsselte Zähler (Modus 5) |
+| **Wireless M-Bus C / T / S** | Wasser-, Wärme-, Gaszähler, Heizkostenverteiler (OMS): Zählerstand, Stichtags- und Monatsendwert, Signalstärke, zuletzt empfangen … – auch über Netzwerkknoten/Repeater empfangene und AES-verschlüsselte Zähler (Modus 5) |
 | **433 MHz** | Revolt NC-5462 Energiemesser, Intertechno-Steckdosen (Tristate), Thermometer (Mebus, GT-WT-02, KW9010, NX7674) |
 | **Nur überwachen** | z. B. ein HomeMatic-/MAX!-Modul, das weiter von FHEM bedient wird – nur Verbindungsstatus |
 
-Jedes Modul bekommt Diagnose-Sensoren für Verbindung, **letzten Empfang** und **Telegramme heute**; dazu **„Empfangene Zähler“** mit allen gehörten Wireless-M-Bus-IDs.
+Jedes Modul bekommt Diagnose-Sensoren für Verbindung, **letzten Empfang** und **Telegramme heute**; dazu **„Empfangene Zähler“** mit den eingerichteten Wireless-M-Bus-Zählern.
 
 ## Voraussetzung: maplecun-splitproxy
 
@@ -51,18 +51,28 @@ Ordner `custom_components/maplecun` nach `/config/custom_components/` kopieren, 
 
 Der MapleCUN hört alles in Funkreichweite – Zähler, Fernbedienungen und Energiemesser der Nachbarn eingeschlossen. Deshalb gilt:
 
-1. Neu empfangene Geräte landen in einer Liste **„Gefundene Geräte“**; eine Benachrichtigung weist darauf hin.
+1. Neu empfangene 433-MHz-Geräte landen in einer Liste **„Gefundene Geräte“**; eine Benachrichtigung weist darauf hin.
 2. **Konfigurieren → Gefundene Geräte übernehmen**: gewünschte Geräte anhaken, optional **„Alle nicht angehakten künftig ignorieren“**.
-   Zähler sind nach Signalstärke sortiert – die eigenen sind meist die stärksten. Über Repeater empfangene Zähler sind gekennzeichnet.
-3. Unter **Konfigurieren → Automatisch übernehmen** lässt sich je Gerätetyp festlegen, was ohne Nachfrage eingerichtet wird
-   (Vorgabe: Revolt ja, Intertechno nein, Zähler nein) und ignorierte Geräte wieder einblenden.
+3. Unter **Konfigurieren → Einstellungen** lässt sich je Gerätetyp festlegen, was ohne Nachfrage eingerichtet wird
+   (Vorgabe: Revolt ja, Intertechno nein) und ignorierte Geräte wieder einblenden.
+
+Wireless-M-Bus-Zähler werden **nicht** gesammelt: Telegramme von Zählern, deren ID nicht eingetragen ist, werden verworfen und nirgends gespeichert.
 
 Übernommene Geräte lassen sich auf ihrer Geräteseite wieder löschen.
 
 ### Wireless-M-Bus-Zähler
 
-Viele Zähler senden nur wenige Male am Tag – Geduld. Die Sensoren (Zählerstand, Stichtagswert, Stichtag, Signalstärke …) entstehen beim ersten Telegramm nach der Übernahme; Zählerstände eignen sich direkt für das **Energie-Dashboard**.
-Name und AES-Schlüssel (verschlüsselte Zähler) unter **Konfigurieren → Zähler bearbeiten**. Die Zähler-ID steht auf dem Gerät bzw. in FHEM im Namen: `WMBUS_LSE_52143909_26_7` → `52143909`.
+Zähler-IDs unter **Konfigurieren → Wireless-M-Bus-Zähler hinzufügen** eintragen. Die ID steht auf dem Gerät bzw. in FHEM im Namen: `WMBUS_LSE_52143909_26_7` → `52143909`.
+Zum Suchen der eigenen IDs lässt sich unter **Konfigurieren → Einstellungen** vorübergehend **„Unbekannte Zähler ins Log schreiben“** einschalten (nur ID, Typ, RSSI; Vorgabe aus).
+Welches Modul Wireless M-Bus empfängt und in welchem Modus (S, T, C), steht unter **Konfigurieren → Funkmodule**; der Modus wird beim Verbinden per `brs`/`brt`/`brc` gesetzt.
+
+Viele Zähler senden nur ein- bis wenige Male am Tag – Geduld. Die Sensoren entstehen beim ersten Telegramm nach dem Eintragen und behalten ihren Wert über Neustarts:
+
+* **Wasser** (warm/kalt): Zählerstand in m³ (`total_increasing`, direkt für das **Energie-Dashboard**)
+* **Heizkostenverteiler**: Verbrauchseinheiten (dimensionslos, `total_increasing`, am Stichtag zurückgesetzt)
+* Diagnose: Stichtagswert und Stichtag, Monatsendwert und Monatsende, Signalstärke, zuletzt empfangen
+
+Name und AES-Schlüssel (verschlüsselte Zähler) unter **Konfigurieren → Zähler bearbeiten**; verschlüsselte Telegramme ohne Schlüssel werden nur geloggt.
 
 ### Thermometer (433 MHz)
 
@@ -76,8 +86,11 @@ Codes aus FHEM: `list TYPE=IT DEF` → z. B. `FFFF0F0FFF FF F0` = Code, Ein, Aus
 
 ## Technisches
 
-* a-culfw liefert Wireless-M-Bus-Telegramme als `b…` (Rahmen A, mit Block-CRCs) bzw. `bY…` (Rahmen B) inkl. LQI/RSSI; alle CRCs werden geprüft
-* OMS-Kurz-/Langheader, ELL (CI 8C), eingepackte Repeater-Telegramme, AES-128-CBC (Modus 5), DIF/VIF-Dekodierung
+* a-culfw liefert Wireless-M-Bus-Telegramme als `b…` (Rahmen A, mit Block-CRCs) bzw. `bY…` (Rahmen B) plus ein angehängtes Statusbyte; alle CRCs werden geprüft (CRC-16/EN-13757), Telegramme mit CRC-Fehler verworfen
+* OMS-Kurz-/Langheader, ELL (CI 8C), AES-128-CBC (Modus 5), DIF/VIF-Dekodierung
+* Über Netzwerkknoten weitergeleitete Telegramme (C=C4, CI=A0, Hersteller `LSE` + Bit 15): das innere Zählertelegramm ab Offset 18 wird bis zum Ende des äußeren Telegramms ausgewertet (das innere L-Feld ist unzuverlässig). An diesem Rahmen scheitern FHEM (`Unsupported CI Field a0`) und vermutlich auch wmbusmeters
+* Der Decoder (`wmbus.py`) hat keine Home-Assistant-Abhängigkeiten: `tests/test_wmbus.py` läuft mit reinem `pytest`
+* a-culfw schaltet bei `brc`/`brt`/`brs` um: meldet ein Wireless-M-Bus-Modul `OFF`, wird der Modus einmal erneut gesetzt
 * Revolt-Dekodierung nach dem Aufbau von FHEM `19_Revolt.pm`, inkl. Plausibilitätsprüfung
 * Verbindung je Modul per TCP (asyncio), automatischer Reconnect
 * Intertechno-Empfang (`i…`, Tristate) nach dem Aufbau von FHEM `10_IT.pm`
@@ -85,7 +98,7 @@ Codes aus FHEM: `list TYPE=IT DEF` → z. B. `FFFF0F0FFF FF F0` = Code, Ein, Aus
 
 ## Alternative: wmbusmeters
 
-Wer lieber [wmbusmeters](https://github.com/wmbusmeters/wmbusmeters) nutzt: a-culfw antwortet auf `brc` mit `OFF`, wodurch wmbusmeters abbricht. [`extras/wmbusmeters`](extras/wmbusmeters) enthält eine Brücke, die das löst.
+Die eingebaute Dekodierung ist der Standard. Wer lieber [wmbusmeters](https://github.com/wmbusmeters/wmbusmeters) nutzt: a-culfw antwortet auf `brc` mit `OFF`, wodurch wmbusmeters abbricht. [`extras/wmbusmeters`](extras/wmbusmeters) enthält eine Brücke, die das löst.
 
 ## Tests
 
@@ -93,6 +106,8 @@ Wer lieber [wmbusmeters](https://github.com/wmbusmeters/wmbusmeters) nutzt: a-cu
 pip install -r requirements_test.txt
 pytest tests
 ```
+
+Nur den Decoder (ohne Home Assistant): `pip install pytest && pytest tests/test_wmbus.py`
 
 ## Danksagung
 

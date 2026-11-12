@@ -1,5 +1,10 @@
 import asyncio
+import logging
+
 import pytest
+
+pytest.importorskip("homeassistant")
+
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
@@ -12,7 +17,10 @@ from custom_components.maplecun import wmbus
 REVOLT = "r3a65E6006432" "08FC" "64" "04D2"   # 230V 1.00A 50Hz 230.0W pf1.00 12.34kWh
 # echtes Telegramm Warmwasser 52144701 (+ LQI 80, RSSI 07 wie von a-culfw angehängt)
 WARM = "b2D446532014714521A06B78D7AE40000000C13297102004C13429900370400426C3F3C02BB560000326CFFFF046D30A30D08443A43758007"
-# echtes Telegramm über Qundis-Repeater (Kaltwasser 52143906)
+# echte Telegramme über Netzwerkknoten (CI A0): Kaltwasser 52143906 bzw. HKV 16660259
+RELAYED_HCA = ("b54C465B276904000F0BA583AA0831000B059C3003144934459026616E7C536087AA30000200B6E88"
+               "04004B6E5102038300426C3F3CCB086E860400C2086C5F3A1EAE326CFFFF046D170D413B2F04ED39"
+               "1F0B2B86283801FD0C1002FD3CC201356980")
 REPEATED = "b4BC465B276908000F13178A7A0831100AB327001394465320639145209761A077ACD0000000C13078303004C13615B7A350100426C3F3C02BB560000326CFFFFB234046D0A095E3982046C5F388C04135254A1DC0300DFF28007"
 
 
@@ -78,7 +86,7 @@ def test_decoder_real_telegrams():
     assert rssi == -70.5          # wie FHEM
 
     t2 = wmbus.decode(wmbus.parse_cul_line(REPEATED)[0])
-    assert t2.meter_id == "52143906" and t2.via == "00809076"
+    assert t2.meter_id == "52143906" and t2.relayed
     assert t2.values()["volume"] == 38.307
 
     with pytest.raises(wmbus.WMBusError):
@@ -131,7 +139,7 @@ async def test_config_flow(hass: HomeAssistant, mods):
 from custom_components.maplecun import intertechno
 
 
-async def test_full(hass: HomeAssistant, mods):
+async def test_full(hass: HomeAssistant, mods, caplog):
     entry = MockConfigEntry(domain=DOMAIN, version=2, title="MapleCUN test", unique_id="127.0.0.1",
         data={"host": "127.0.0.1", "modules": _modules(mods)},
         options={"init_mode": True, "meters": {}, "revolts": {},
@@ -160,45 +168,65 @@ async def test_full(hass: HomeAssistant, mods):
     await _settle(hass)
     assert float(hass.states.get("sensor.revolt_3a65_power").state) == 230.0
 
-    # Unbekannte Fernbedienung + Zähler -> nur "gefunden", Benachrichtigung
+    # Unbekannte Fernbedienung -> "gefunden", Benachrichtigung; unbekannte Zähler -> verworfen
     await mods["2"].send(intertechno.encode("0000FFFF00", "FF") + "20")
     await mods["1"].send(WARM)
     await mods["1"].send(REPEATED)
     await _settle(hass)
     hub = entry.runtime_data
-    assert set(hub.discovered) == {"it:0000FFFF00", "meter:52144701", "meter:52143906"}
-    notes = hass.data.get("persistent_notification") or {}
+    assert set(hub.discovered) == {"it:0000FFFF00"}
+    assert hub.seen == {}                         # Zähler der Nachbarn werden nicht gespeichert
     from homeassistant.components import persistent_notification as pn
     assert any("neue Geräte" in (n.get("message") or "") for n in pn._async_get_or_create_notifications(hass).values())
-    seen = hass.states.get("sensor.maplecun_test_received_meters")
-    assert seen.state == "2"
+    assert hass.states.get("sensor.maplecun_test_received_meters").state == "0"
+    assert "Unbekannter Zähler" not in caplog.text   # Diagnose-Log standardmäßig aus
 
-    # Gefundene Geräte: Warmwasser übernehmen, Rest ignorieren
+    # Gefundene Geräte: nichts übernehmen, Rest ignorieren
     r = await hass.config_entries.options.async_init(entry.entry_id)
     assert r["menu_options"][0] == "discovered"
     r = await hass.config_entries.options.async_configure(r["flow_id"], {"next_step_id": "discovered"})
-    labels = r["data_schema"].schema["adopt"].options
-    print(labels)
-    assert "Warmwasser" in labels["meter:52144701"] and "Repeater 00809076" in labels["meter:52143906"]
-    r = await hass.config_entries.options.async_configure(r["flow_id"], {"adopt": ["meter:52144701"], "ignore_rest": True})
+    r = await hass.config_entries.options.async_configure(r["flow_id"], {"adopt": [], "ignore_rest": True})
     assert r["type"] is FlowResultType.CREATE_ENTRY
     await _settle(hass, 1.0)
+    assert entry.runtime_data.discovered == {} and "it:0000FFFF00" in entry.runtime_data.ignored
+
+    # Zähler-IDs eintragen (Warmwasser direkt, HKV über Netzwerkknoten)
+    for meter_id in ("52144701", "16660259"):
+        r = await hass.config_entries.options.async_init(entry.entry_id)
+        r = await hass.config_entries.options.async_configure(r["flow_id"], {"next_step_id": "add_meter"})
+        r = await hass.config_entries.options.async_configure(r["flow_id"], {"meter_id": meter_id})
+        assert r["type"] is FlowResultType.CREATE_ENTRY
+        await _settle(hass, 1.0)
     hub = entry.runtime_data
-    assert "52144701" in entry.options["meters"]
-    assert hub.discovered == {} and {"it:0000FFFF00", "meter:52143906"} <= hub.ignored
-    # ignorierte tauchen nicht wieder auf
-    await mods["1"].send(REPEATED)
-    await _settle(hass)
-    assert hub.discovered == {}
+    assert set(entry.options["meters"]) == {"52144701", "16660259"}
 
     await mods["1"].send(WARM)
+    await mods["1"].send(RELAYED_HCA)
+    await mods["1"].send(REPEATED)                # weiterhin unbekannt
     await _settle(hass)
+    assert set(hub.seen) == {"52144701", "16660259"}
+    ents = er.async_get(hass)
     st = hass.states.get("sensor.warmwasser_52144701_meter_reading")
     assert float(st.state) == 27.129
     assert st.attributes["device_class"] == "water" and st.attributes["state_class"] == "total_increasing"
+    assert st.attributes["unit_of_measurement"] == "m³"
     assert float(hass.states.get("sensor.warmwasser_52144701_due_date_value").state) == 9.942
+    assert ents.async_get("sensor.warmwasser_52144701_due_date_value").entity_category == "diagnostic"
     assert hass.states.get("sensor.warmwasser_52144701_due_date").state == "2025-12-31"
     assert float(hass.states.get("sensor.warmwasser_52144701_signal_strength").state) == -70.5
+    last = hass.states.get("sensor.warmwasser_52144701_last_received")
+    assert last.state not in ("unknown", "unavailable")
+    assert ents.async_get(last.entity_id).entity_category == "diagnostic"
+
+    hca = hass.states.get("sensor.heizkostenverteiler_16660259_consumption_units")
+    assert hca.state == "488" and hca.attributes["state_class"] == "total_increasing"
+    assert "unit_of_measurement" not in hca.attributes
+    assert hass.states.get("sensor.heizkostenverteiler_16660259_due_date_value").state == "251"
+    month = hass.states.get("sensor.heizkostenverteiler_16660259_month_end_value")
+    assert month.state == "486" and ents.async_get(month.entity_id).entity_category == "diagnostic"
+    assert hass.states.get("sensor.heizkostenverteiler_16660259_month_end").state == "2026-10-31"
+    dev = dr.async_get(hass).async_get_device({(DOMAIN, f"{entry.entry_id}_meter_16660259")})
+    assert (dev.manufacturer, dev.model, dev.serial_number) == ("QDS", "Heizkostenverteiler", "16660259")
 
     # Zähler umbenennen
     r = await hass.config_entries.options.async_init(entry.entry_id)
@@ -213,11 +241,13 @@ async def test_full(hass: HomeAssistant, mods):
     # Einstellungen: Ignorierte zurücksetzen
     r = await hass.config_entries.options.async_init(entry.entry_id)
     r = await hass.config_entries.options.async_configure(r["flow_id"], {"next_step_id": "settings"})
-    r = await hass.config_entries.options.async_configure(r["flow_id"], {"auto_revolt": True, "auto_it": False, "auto_sensor": False, "auto_meter": False, "reset_ignored": True})
+    r = await hass.config_entries.options.async_configure(r["flow_id"], {"auto_revolt": True, "auto_it": False, "auto_sensor": False, "log_unknown_meters": True, "reset_ignored": True})
     await _settle(hass, 1.0)
+    caplog.set_level(logging.INFO, logger="custom_components.maplecun")
     await mods["1"].send(REPEATED)
     await _settle(hass)
-    assert "meter:52143906" in entry.runtime_data.discovered
+    assert "Unbekannter Zähler 52143906" in caplog.text
+    assert entry.runtime_data.discovered == {} and "52143906" not in entry.runtime_data.seen
 
     # Zähler entfernen -> Gerät weg
     r = await hass.config_entries.options.async_init(entry.entry_id)
@@ -232,6 +262,28 @@ async def test_full(hass: HomeAssistant, mods):
     await _settle(hass, 0.5)
     assert hass.states.get("binary_sensor.maplecun_test_module_2").state == "off"
     assert hass.states.get("switch.steckdose_flur").state == "unavailable"
+    # Zähler senden selten: Wert bleibt erhalten
+    assert hass.states.get("sensor.heizkostenverteiler_16660259_consumption_units").state == "488"
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_wmbus_mode_off_retry(hass: HomeAssistant, mods):
+    """a-culfw schaltet bei "brc" um: Antwort OFF -> einmal erneut setzen, nicht endlos."""
+    entry = MockConfigEntry(domain=DOMAIN, version=2, title="MapleCUN test", unique_id="127.0.0.1",
+        data={"host": "127.0.0.1", "modules": _modules(mods)},
+        options={"init_mode": True, "meters": {}, "revolts": {}, "it_devices": {}})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await _settle(hass, 0.6)
+    assert mods["1"].received == ["X21", "brc"]
+    await mods["1"].send("OFF")
+    await _settle(hass)
+    assert mods["1"].received == ["X21", "brc", "X21", "brc"]
+    await mods["1"].send("OFF")                    # kurz darauf erneut: nur Warnung
+    await mods["2"].send("OFF")                    # 433-MHz-Modul: unverändert
+    await _settle(hass)
+    assert mods["1"].received == ["X21", "brc", "X21", "brc"]
+    assert mods["2"].received == ["X21"]
     await hass.config_entries.async_unload(entry.entry_id)
 
 
