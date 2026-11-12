@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import logging
 
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
+from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers import config_validation as cv, device_registry as dr
+from homeassistant.helpers.typing import ConfigType
+import voluptuous as vol
 
 from .const import (
     CONF_IT_DEVICES,
@@ -33,6 +36,58 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR, Platform.SWITCH]
 
 type MapleCunConfigEntry = ConfigEntry[MapleCunHub]
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+SERVICE_IMPORT_FHEM_LOG = "import_fhem_log"
+IMPORT_SCHEMA = vol.Schema(
+    {
+        vol.Required("path"): cv.string,
+        vol.Optional("dry_run", default=True): cv.boolean,
+        vol.Optional("overwrite", default=False): cv.boolean,
+        vol.Optional("config_entry_id"): cv.string,
+    }
+)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Aktionen registrieren."""
+
+    async def _import_fhem_log(call: ServiceCall) -> ServiceResponse:
+        from . import importer
+
+        entries = [
+            e for e in hass.config_entries.async_entries(DOMAIN)
+            if e.state is ConfigEntryState.LOADED
+            and (not call.data.get("config_entry_id") or e.entry_id == call.data["config_entry_id"])
+        ]
+        if len(entries) != 1:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="no_entry" if not entries else "multiple_entries",
+            )
+        path = call.data["path"]
+        allowed = await hass.async_add_executor_job(hass.config.is_allowed_path, path)
+        if not allowed:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN, translation_key="path_not_allowed", translation_placeholders={"path": path}
+            )
+        try:
+            analysis = await importer.async_analyze_file(hass, entries[0].runtime_data, path)
+        except OSError as err:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN, translation_key="file_error",
+                translation_placeholders={"path": path, "error": str(err)},
+            ) from err
+        return await importer.async_import(
+            hass, entries[0], analysis, dry_run=call.data["dry_run"], overwrite=call.data["overwrite"]
+        )
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_IMPORT_FHEM_LOG, _import_fhem_log,
+        schema=IMPORT_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
+    )
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: MapleCunConfigEntry) -> bool:

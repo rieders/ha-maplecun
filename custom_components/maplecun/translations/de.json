@@ -45,7 +45,8 @@
           "remove_meter": "Zähler entfernen",
           "add_it": "Intertechno-Steckdose hinzufügen",
           "edit_it": "Ein-/Aus-Codes ändern",
-          "remove_it": "Intertechno-Steckdosen entfernen"
+          "remove_it": "Intertechno-Steckdosen entfernen",
+          "import_fhem": "FHEM-Log importieren"
         },
         "description": "Neu gefundene Geräte: {found}"
       },
@@ -150,6 +151,22 @@
         "data_description": {
           "key": "AES-128-Schlüssel des Zählers (32 Hex-Zeichen). Gilt für die Sicherheitsmodi 5 und 7 sowie verschlüsselten Extended Link Layer (Kamstrup). Leer lassen bei unverschlüsselten Zählern."
         }
+      },
+      "import_fhem": {
+        "title": "FHEM-Log importieren",
+        "description": "Liest alte Wireless-M-Bus-Telegramme aus einem FHEM-Log ein (Zeilen „WMBUS Unknown device b…::-56.5“). Übernommen werden nur hier angelegte Zähler, alles andere wird verworfen. **Vorher ein Backup anlegen** – der Import schreibt Langzeitstatistiken.\n\nDie Datei wird direkt nach dem Einlesen gelöscht. Nächster Schritt: Probelauf mit Bericht.",
+        "data": {
+          "file": "FHEM-Logdatei (.txt/.log)",
+          "overwrite": "Vorhandene Stunden in der Statistik überschreiben"
+        }
+      },
+      "import_report": {
+        "title": "Probelauf",
+        "description": "{report}\n\nEs wurde noch nichts geschrieben. **Vor dem Import ein Backup anlegen.**",
+        "menu_options": {
+          "import_confirm": "Jetzt importieren",
+          "import_cancel": "Abbrechen"
+        }
       }
     },
     "error": {
@@ -159,10 +176,13 @@
       "invalid_meter": "Zähler-ID: genau 8 Ziffern, z. B. 52143909.",
       "invalid_key": "AES-Schlüssel: 32 Hex-Zeichen.",
       "cannot_connect": "Port nicht erreichbar.",
-      "no_module": "Mindestens ein Modul aktivieren."
+      "no_module": "Mindestens ein Modul aktivieren.",
+      "file_error": "Die Datei konnte nicht gelesen werden."
     },
     "abort": {
-      "nothing_found": "Keine neuen Geräte gefunden."
+      "nothing_found": "Keine neuen Geräte gefunden.",
+      "import_done": "Import abgeschlossen.\n\n{report}",
+      "import_cancelled": "Import abgebrochen, nichts geschrieben."
     }
   },
   "selector": {
@@ -280,6 +300,44 @@
       "meter_last_received": {
         "name": "Zuletzt empfangen"
       }
+    }
+  },
+  "services": {
+    "import_fhem_log": {
+      "name": "FHEM-Log importieren",
+      "description": "Liest alte Wireless-M-Bus-Telegramme aus einem FHEM-Log, setzt die aktuellen Zählerstände und importiert Langzeitstatistiken. Verwendet nur in der Integration angelegte Zähler.",
+      "fields": {
+        "path": {
+          "name": "Pfad",
+          "description": "Datei unter /config (muss ein erlaubter Pfad sein), z. B. /config/meine_zaehler.txt."
+        },
+        "dry_run": {
+          "name": "Probelauf",
+          "description": "Nur auswerten und berichten, nichts schreiben (Standard)."
+        },
+        "overwrite": {
+          "name": "Überschreiben",
+          "description": "In der Statistik bereits vorhandene Stunden überschreiben."
+        },
+        "config_entry_id": {
+          "name": "Konfigurationseintrag",
+          "description": "MapleCUN-Eintrag (nur bei mehreren Einträgen nötig)."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "no_entry": {
+      "message": "Kein geladener MapleCUN-Eintrag gefunden."
+    },
+    "multiple_entries": {
+      "message": "Mehrere MapleCUN-Einträge – bitte config_entry_id angeben."
+    },
+    "path_not_allowed": {
+      "message": "Zugriff auf {path} ist nicht erlaubt (allowlist_external_dirs)."
+    },
+    "file_error": {
+      "message": "{path} kann nicht gelesen werden: {error}"
     }
   }
 }

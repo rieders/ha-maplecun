@@ -13,6 +13,8 @@ from homeassistant.const import CONF_HOST
 from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.selector import (
+    FileSelector,
+    FileSelectorConfig,
     SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
@@ -160,6 +162,8 @@ class MapleCunOptionsFlow(OptionsFlow):
 
     _edit_code: str
     _edit_meter: str
+    _import_analysis = None
+    _import_overwrite = False
 
     # ------------------------------------------------------------------ Hilfen
     def _opt(self, key: str) -> dict:
@@ -180,7 +184,7 @@ class MapleCunOptionsFlow(OptionsFlow):
             menu.append("discovered")
         menu += ["modules", "settings", "add_meter"]
         if self._opt(CONF_METERS):
-            menu += ["edit_meter", "remove_meter"]
+            menu += ["edit_meter", "remove_meter", "import_fhem"]
         menu.append("add_it")
         if self._opt(CONF_IT_DEVICES):
             menu += ["edit_it", "remove_it"]
@@ -357,6 +361,63 @@ class MapleCunOptionsFlow(OptionsFlow):
             }
         )
         return self.async_show_form(step_id="remove_meter", data_schema=schema)
+
+    # ------------------------------------------------------------------ FHEM-Log
+    async def async_step_import_fhem(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Schritt 1: Datei hochladen (wird nach dem Einlesen sofort gelöscht)."""
+        from . import importer
+
+        hub = self._hub()
+        errors: dict[str, str] = {}
+        if user_input is not None and hub is not None:
+            from homeassistant.components.file_upload import process_uploaded_file
+            from homeassistant.util import dt as dt_util
+
+            keys, tz = dict(hub.meters), dt_util.get_default_time_zone()
+
+            def _read(file_id: str):
+                with process_uploaded_file(self.hass, file_id) as path:
+                    return importer.read_and_analyze(path, keys, tz)
+
+            try:
+                self._import_analysis = await self.hass.async_add_executor_job(_read, user_input["file"])
+            except (OSError, ValueError):
+                errors["file"] = "file_error"
+            else:
+                self._import_overwrite = user_input.get("overwrite", False)
+                return await self.async_step_import_report()
+        schema = vol.Schema(
+            {
+                vol.Required("file"): FileSelector(FileSelectorConfig(accept=".txt,.log,text/plain")),
+                vol.Optional("overwrite", default=False): bool,
+            }
+        )
+        return self.async_show_form(step_id="import_fhem", data_schema=schema, errors=errors)
+
+    async def async_step_import_report(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Schritt 2: Probelauf und Bericht; Schritt 3: bestätigen oder abbrechen."""
+        from . import importer
+
+        report = await importer.async_import(
+            self.hass, self.config_entry, self._import_analysis, dry_run=True, overwrite=self._import_overwrite
+        )
+        menu = ["import_confirm", "import_cancel"] if any(z["werte"] for z in report["zaehler"]) else ["import_cancel"]
+        return self.async_show_menu(
+            step_id="import_report", menu_options=menu, description_placeholders={"report": report["text"]}
+        )
+
+    async def async_step_import_confirm(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        from . import importer
+
+        report = await importer.async_import(
+            self.hass, self.config_entry, self._import_analysis, dry_run=False, overwrite=self._import_overwrite
+        )
+        self._import_analysis = None
+        return self.async_abort(reason="import_done", description_placeholders={"report": report["text"]})
+
+    async def async_step_import_cancel(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        self._import_analysis = None
+        return self.async_abort(reason="import_cancelled")
 
     # ------------------------------------------------------------------ Intertechno
     async def async_step_add_it(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:

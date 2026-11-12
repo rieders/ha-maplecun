@@ -1,0 +1,19 @@
+import_fhem_log:
+  fields:
+    path:
+      required: true
+      example: /config/meine_zaehler.txt
+      selector:
+        text:
+    dry_run:
+      default: true
+      selector:
+        boolean:
+    overwrite:
+      default: false
+      selector:
+        boolean:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: maplecun

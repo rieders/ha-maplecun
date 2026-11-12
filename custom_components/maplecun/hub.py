@@ -432,11 +432,19 @@ class MapleCunHub:
             _LOGGER.warning("Zähler %s: %s", err.meter_id or mid, err)
             return
         tele.rssi = rssi
-        mid = tele.meter_id
-        if mid not in self.meters:
-            return
+        if tele.meter_id in self.meters:
+            self.deliver(tele, rssi, dt_util.utcnow(), mod.module_id)
 
-        now = dt_util.utcnow()
+    @callback
+    def deliver(self, tele: wmbus.Telegram, rssi: float | None, now, module_id: str | None) -> None:
+        """Telegramm eines angelegten Zählers übernehmen.
+
+        Gemeinsamer Codepfad für Live-Empfang und FHEM-Import: Kopfdaten speichern,
+        Entitäten anlegen bzw. aktualisieren. now = Empfangszeitpunkt (UTC).
+        """
+        mid = tele.meter_id
+        if module_id is None:
+            module_id = self.seen.get(mid, {}).get("module")
         self.seen[mid] = {
             "manufacturer": tele.manufacturer,
             "type": tele.type_name,
@@ -445,7 +453,7 @@ class MapleCunHub:
             "encrypted": tele.encrypted,
             "rssi": rssi,
             "relayed": tele.relayed,
-            "module": mod.module_id,
+            "module": module_id,
             "last_seen": dt_util.as_local(now).isoformat(timespec="seconds"),
         }
         if len(self.seen) > SEEN_MAX:

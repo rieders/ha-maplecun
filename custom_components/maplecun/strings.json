@@ -45,7 +45,8 @@
           "remove_meter": "Remove meters",
           "add_it": "Add Intertechno socket",
           "edit_it": "Change on/off codes",
-          "remove_it": "Remove Intertechno sockets"
+          "remove_it": "Remove Intertechno sockets",
+          "import_fhem": "Import FHEM log"
         },
         "description": "Newly found devices: {found}"
       },
@@ -150,6 +151,22 @@
         "data_description": {
           "key": "AES-128 key of the meter (32 hex characters). Used for security modes 5 and 7 and for encrypted extended link layer (Kamstrup). Leave empty for unencrypted meters."
         }
+      },
+      "import_fhem": {
+        "title": "Import FHEM log",
+        "description": "Imports old Wireless M-Bus telegrams from an FHEM log (lines “WMBUS Unknown device b…::-56.5”). Only meters set up here are imported, everything else is discarded. **Create a backup first** – the import writes long-term statistics.\n\nThe file is deleted right after reading. Next step: dry run with report.",
+        "data": {
+          "file": "FHEM log file (.txt/.log)",
+          "overwrite": "Overwrite existing hours in the statistics"
+        }
+      },
+      "import_report": {
+        "title": "Dry run",
+        "description": "{report}\n\nNothing has been written yet. **Create a backup before importing.**",
+        "menu_options": {
+          "import_confirm": "Import now",
+          "import_cancel": "Cancel"
+        }
       }
     },
     "error": {
@@ -159,10 +176,13 @@
       "invalid_meter": "Meter ID: exactly 8 digits, e.g. 52143909.",
       "invalid_key": "AES key: 32 hex characters.",
       "cannot_connect": "Port not reachable.",
-      "no_module": "Enable at least one module."
+      "no_module": "Enable at least one module.",
+      "file_error": "The file could not be read."
     },
     "abort": {
-      "nothing_found": "No new devices found."
+      "nothing_found": "No new devices found.",
+      "import_done": "Import finished.\n\n{report}",
+      "import_cancelled": "Import cancelled, nothing written."
     }
   },
   "selector": {
@@ -280,6 +300,44 @@
       "meter_last_received": {
         "name": "Last received"
       }
+    }
+  },
+  "services": {
+    "import_fhem_log": {
+      "name": "Import FHEM log",
+      "description": "Reads old Wireless M-Bus telegrams from an FHEM log, sets the current meter values and imports long-term statistics. Only meters set up in the integration are used.",
+      "fields": {
+        "path": {
+          "name": "Path",
+          "description": "File below /config (must be an allowed path), e.g. /config/meine_zaehler.txt."
+        },
+        "dry_run": {
+          "name": "Dry run",
+          "description": "Only analyse and report, write nothing (default)."
+        },
+        "overwrite": {
+          "name": "Overwrite",
+          "description": "Overwrite hours that already exist in the statistics."
+        },
+        "config_entry_id": {
+          "name": "Config entry",
+          "description": "MapleCUN entry (only needed with several entries)."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "no_entry": {
+      "message": "No loaded MapleCUN entry found."
+    },
+    "multiple_entries": {
+      "message": "Several MapleCUN entries – please choose config_entry_id."
+    },
+    "path_not_allowed": {
+      "message": "Access to {path} is not allowed (allowlist_external_dirs)."
+    },
+    "file_error": {
+      "message": "Cannot read {path}: {error}"
     }
   }
 }

@@ -74,6 +74,49 @@ Viele Zähler senden nur ein- bis wenige Male am Tag – Geduld. Die Sensoren en
 * Diagnose: Stichtagswert und Stichtag, Monatsendwert und Monatsende, Signalstärke, zuletzt empfangen (Zeitstempel, bleibt über Neustarts erhalten)
 
 Name und AES-Schlüssel (verschlüsselte Zähler) unter **Konfigurieren → Zähler bearbeiten**; verschlüsselte Telegramme ohne Schlüssel werden nur geloggt.
+Ältere Zählerstände aus FHEM lassen sich [nachträglich importieren](#alte-zählerstände-aus-fhem-übernehmen).
+
+### Alte Zählerstände aus FHEM übernehmen
+
+Wer vorher FHEM benutzt hat, kann die Telegramme aus dem FHEM-Log nachträglich einlesen – für den aktuellen Zählerstand und den Verlauf (Langzeitstatistik, Energie-Dashboard). Verwendet werden Zeilen wie
+
+```
+2026.07.04 05:56:56 3: WMBUS Unknown device b4BC465B27…9FE880::-56.5, please define it
+```
+
+z. B. herausgefiltert mit `grep "WMBUS Unknown device" fhem-2026-*.log > meine_zaehler.txt`. Übernommen werden nur Zähler, die in der Integration angelegt sind; Telegramme aller anderen Zähler werden verworfen und nirgends gespeichert (sie erscheinen im Bericht nur als Anzahl).
+
+**Vorher ein Backup anlegen** – der Import schreibt in die Statistik-Datenbank.
+
+**Über die Oberfläche:** Konfigurieren → **FHEM-Log importieren** → Datei hochladen (.txt/.log). Es folgt ein Probelauf mit Bericht; geschrieben wird erst nach **„Jetzt importieren“**. Die hochgeladene Datei wird direkt nach dem Einlesen gelöscht.
+
+**Als Aktion** (z. B. Entwicklerwerkzeuge → Aktionen):
+
+```yaml
+action: maplecun.import_fhem_log
+data:
+  path: /config/fhem_import/meine_zaehler.txt
+  dry_run: true        # Standard: nur auswerten und berichten
+  overwrite: false     # vorhandene Stunden der Statistik nicht überschreiben
+```
+
+Die Datei muss in einem erlaubten Verzeichnis liegen (`allowlist_external_dirs`), z. B. in `configuration.yaml`:
+
+```yaml
+homeassistant:
+  allowlist_external_dirs:
+    - /config/fhem_import
+```
+
+(Nicht `/config/www` verwenden – dieser Ordner ist ohne Anmeldung über `/local/` abrufbar.) Die Aktion liefert den Bericht als Antwort und zusätzlich als Benachrichtigung: Zeilen gesamt, dekodiert, verworfen (mit Gründen), je Zähler Anzahl Werte, Zeitraum, erster/letzter Stand und Auffälligkeiten.
+
+So wird ausgewertet:
+
+* **Zeitpunkt** eines Werts ist die Ablesezeit aus dem Telegramm (Datum/Zeit-Datensatz), sonst die Empfangszeit aus dem Log (lokale Zeit von Home Assistant)
+* **Plausibilität:** Werte je Zähler nach Zeit sortiert; rückläufige Stände werden gemeldet und nicht übernommen. Beim Heizkostenverteiler ist ein Rücksprung über den Stichtag (31.12. bzw. Stichtag aus dem Telegramm) ein Reset: Verbrauch bis zum Stichtag (Stichtagswert) plus Stand danach
+* **Aktueller Wert:** Ist der jüngste importierte Stand neuer als der vorhandene (oder gibt es noch keinen), werden Zählerstand, Stichtags- und Monatsendwerte und „Zuletzt empfangen“ (= Empfangszeit aus dem Log) gesetzt – über denselben Weg wie ein live empfangenes Telegramm, sie bleiben also über Neustarts erhalten. Ältere Werte überschreiben keinen neueren Live-Wert
+* **Verlauf:** Für Zählerstand-Sensoren (Wasser m³, Heizkostenverteiler, Wärme kWh) pro Tag der letzte Stand als Stundenwert (Statistik-ID = Entity-ID, Quelle `recorder`). Tage ohne Telegramm bleiben leer (keine Interpolation)
+* **Anschluss an vorhandene Statistik:** Werte vor der vorhandenen Statistik werden rückwärts von deren erstem Wert aus summiert – vorhandene Summen bleiben unverändert, es entsteht kein Sprung. Werden Lücken gefüllt und passt die Summe danach nicht (z. B. weil Home Assistant dort einen Reset erkannt hat), werden die nachfolgenden Summen konsistent verschoben. Vorhandene Stunden werden nur mit `overwrite: true` ersetzt. Werte, die nicht älter sind als die jüngste vorhandene Statistik, werden nicht in die Statistik geschrieben – an die Gegenwart schließt die laufende Statistik selbst an. Gibt es noch gar keine Statistik, enden die importierten Summen bei 0 am aktuellen Zählerstand (frühere Summen sind dann negativ; für Verbrauchsanzeigen zählen nur Differenzen)
 
 ### Zählerübersicht
 
