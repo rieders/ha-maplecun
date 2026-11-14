@@ -304,6 +304,9 @@
       },
       "mode_status": {
         "name": "Receive mode module {module}"
+      },
+      "meter_last_telegram": {
+        "name": "Last telegram (raw)"
       }
     }
   },

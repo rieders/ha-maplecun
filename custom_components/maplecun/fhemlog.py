@@ -57,7 +57,9 @@ class Reading:
     values: dict
     tele: wmbus.Telegram
     rssi: float | None
-    reset: bool = False         # Heizkostenverteiler: Rücksprung am Stichtag
+    reset: bool = False
+    line: str | None = None     # Rohzeile "b…" wie im Log
+    lqi: int | None = None         # Heizkostenverteiler: Rücksprung am Stichtag
 
     @property
     def due(self) -> tuple[date | None, float | None]:
@@ -140,7 +142,7 @@ def analyze(lines: Iterable[str], keys: dict[str, bytes | None], tz: tzinfo) -> 
             continue
         received, rawline, rssi = parsed
         try:
-            frame, _ = wmbus.parse_cul_line(rawline)
+            frame, lqi, _ = wmbus.parse_cul_line_status(rawline)
         except wmbus.WMBusError:
             res.discarded[R_FRAME] += 1
             continue
@@ -177,7 +179,7 @@ def analyze(lines: Iterable[str], keys: dict[str, bytes | None], tz: tzinfo) -> 
         res.decoded += 1
         raw.setdefault(tele.meter_id, []).append(Reading(
             meter_id=tele.meter_id, ts=ts, received=received, from_meter=isinstance(meter_time, datetime),
-            key=key, value=values[key], values=values, tele=tele, rssi=rssi,
+            key=key, value=values[key], values=values, tele=tele, rssi=rssi, line=rawline, lqi=lqi,
         ))
 
     for mid, readings in raw.items():

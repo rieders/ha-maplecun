@@ -114,6 +114,11 @@ def signal_meter(entry_id: str, meter_id: str) -> str:
     return f"{DOMAIN}_{entry_id}_meter_{meter_id}"
 
 
+def signal_meter_raw(entry_id: str, meter_id: str) -> str:
+    """Rohzeile des letzten Telegramms eines angelegten Zählers."""
+    return f"{DOMAIN}_{entry_id}_meter_raw_{meter_id}"
+
+
 def signal_seen(entry_id: str) -> str:
     return f"{DOMAIN}_{entry_id}_seen"
 

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
+import json
+import logging
+from pathlib import Path
 import re
 import time
 
@@ -34,6 +37,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
 from . import MapleCunConfigEntry
@@ -54,12 +58,40 @@ from .const import (
     signal_connection,
     signal_meter,
     signal_meter_new,
+    signal_meter_raw,
     signal_module_info,
     signal_raw,
     signal_rx,
     signal_revolt,
     signal_seen,
 )
+
+_LOGGER = logging.getLogger(__name__)
+
+# Englische Namen aus strings.json als Rückfall: Home Assistant nimmt entity_description.name
+# nur, wenn die Übersetzung fehlt (Entity._name_internal). So zeigt eine Entität nie nur den
+# Gerätenamen, auch wenn die Übersetzungsdatei der Installation veraltet ist.
+_FALLBACK_NAMES: dict[str, str] = {
+    k: v.get("name", "")
+    for k, v in json.loads((Path(__file__).parent / "strings.json").read_text(encoding="utf-8"))
+    ["entity"]["sensor"].items()
+}
+
+
+def _with_fallback_name(entity: SensorEntity) -> None:
+    """entity_description.name aus der Übersetzung (englisch) setzen, falls noch leer."""
+    key = entity.translation_key
+    if not key or key not in _FALLBACK_NAMES:
+        return
+    name = _FALLBACK_NAMES[key]
+    placeholders = getattr(entity, "_attr_translation_placeholders", None) or {}
+    try:
+        name = name.format(**placeholders)
+    except (KeyError, IndexError):
+        pass
+    desc = getattr(entity, "entity_description", None) or SensorEntityDescription(key=key)
+    entity.entity_description = replace(desc, name=name)
+
 
 # ======================================================================= Revolt
 
@@ -239,11 +271,31 @@ async def async_setup_entry(
         if ent.unique_id in stale:
             ent_reg.async_remove(ent.entity_id)
 
+    wmbus = any(m.role in WMBUS_ROLES for m in hub.modules.values())
+    rf_module = hub.module_for_role(ROLE_RF433)
+
+    # Alle Sensor-Einträge entfernen, die diese Version nicht mehr anlegt: alte Schlüssel,
+    # frühere unique_ids, Entitäten entfernter Module/Zähler. Solche verwaisten Einträge
+    # zeigen in der Oberfläche nur den Gerätenamen (kein Name, kein Zustand).
+    expected = _expected_sensor_ids(entry, hub, wmbus)
+    # Ist gerade kein wMBus- bzw. 433-MHz-Modul eingerichtet, bleiben die Einträge dieser
+    # Geräte stehen (Rolle evtl. nur vorübergehend geändert).
+    keep = tuple(
+        f"{entry.entry_id}_{p}_" for p, active in
+        (("meter", wmbus), ("revolt", rf_module), ("climate", rf_module)) if not active
+    )
+    removed = []
+    for ent in er.async_entries_for_config_entry(ent_reg, entry.entry_id):
+        if ent.domain == "sensor" and ent.unique_id not in expected and not (keep and ent.unique_id.startswith(keep)):
+            removed.append(f"{ent.entity_id} ({ent.unique_id})")
+            ent_reg.async_remove(ent.entity_id)
+    if removed:
+        _LOGGER.info("Verwaiste Sensor-Einträge entfernt: %s", ", ".join(removed))
+
     # Rohdaten je Modul (Diagnose, standardmäßig aus)
     entities.extend(RawSensor(entry, mid) for mid in sorted(hub.modules))
 
     # --- 433 MHz / Revolt (eingerichtete Geräte)
-    rf_module = hub.module_for_role(ROLE_RF433)
     revolt_cfg: dict = entry.options.get(CONF_REVOLTS, {})
     if rf_module:
         for rid in sorted(hub.revolts):
@@ -265,19 +317,35 @@ async def async_setup_entry(
                 entities.append(ClimateSensor(entry, rf_module.module_id, key, cfg, desc))
 
     # --- Wireless M-Bus
-    if any(m.role in WMBUS_ROLES for m in hub.modules.values()):
+    if wmbus:
         entities.append(SeenMetersSensor(entry))
         meters_cfg: dict = entry.options.get(CONF_METERS, {})
-        for meter_id, keys in hub.meter_keys.items():
+        created: set[tuple[str, str]] = set()
+        for meter_id in sorted(hub.meters):
             type_name = hub.seen.get(meter_id, {}).get("type", "")
-            for key in keys:
-                if desc := meter_description(key, type_name):
-                    entities.append(MeterSensor(entry, meter_id, meters_cfg.get(meter_id, {}), type_name, desc, None))
+            cfg = meters_cfg.get(meter_id, {})
+            if meter_id not in hub.seen:
+                continue          # noch nie empfangen: Entitäten entstehen mit dem ersten Telegramm
+            # Schon empfangene Zähler: Rohzeile und "Zuletzt empfangen" immer anlegen (auch wenn
+            # meter_keys aus einer älteren Version stammt); neue Schlüssel nicht doppelt anlegen
+            created.add((meter_id, "last_telegram"))
+            entities.append(MeterRawSensor(entry, meter_id, cfg, type_name))
+            for key in ("last_received", *hub.meter_keys.get(meter_id, [])):
+                if (meter_id, key) not in created and (desc := meter_description(key, type_name)):
+                    created.add((meter_id, key))
+                    entities.append(MeterSensor(entry, meter_id, cfg, type_name, desc, None))
 
         @callback
         def _new_meter_values(meter_id: str, tele, new_keys: list[str], values: dict) -> None:
             new = []
+            cfg = meters_cfg.get(meter_id, {})
+            if (meter_id, "last_telegram") not in created:
+                created.add((meter_id, "last_telegram"))
+                new.append(MeterRawSensor(entry, meter_id, cfg, tele.type_name))
             for key in new_keys:
+                if (meter_id, key) in created:
+                    continue
+                created.add((meter_id, key))
                 if desc := meter_description(key, tele.type_name):
                     new.append(MeterSensor(entry, meter_id, meters_cfg.get(meter_id, {}), tele.type_name, desc, values))
             if new:
@@ -286,6 +354,32 @@ async def async_setup_entry(
         entry.async_on_unload(async_dispatcher_connect(hass, signal_meter_new(entry.entry_id), _new_meter_values))
 
     async_add_entities(entities)
+
+
+def _expected_sensor_ids(entry, hub, wmbus: bool) -> set[str]:
+    """unique_ids aller Sensoren, die async_setup_entry (jetzt oder später) anlegt."""
+    e = entry.entry_id
+    ids = set()
+    for mid, mod in hub.modules.items():
+        ids |= {f"{e}_last_raw_{mid}", f"{e}_last_rx_{mid}", f"{e}_rx_today_{mid}"}
+        if mod.is_wmbus:
+            ids.add(f"{e}_mode_{mid}")
+        ids |= {f"{e}_{k}_{mid}" for k in MODULE_INFO_KEYS}
+    if hub.module_for_role(ROLE_RF433):
+        ids |= {f"{e}_revolt_{rid}_{d.key}" for rid in hub.revolts for d in REVOLT_SENSORS}
+        for key, cfg in entry.options.get(CONF_SENSORS, {}).items():
+            ids |= {f"{e}_climate_{key}_{d.key}" for d in climate_descriptions(cfg.get(CONF_MODEL, ""))}
+    if wmbus:
+        ids.add(f"{e}_seen_meters")
+        for mid in hub.meters:
+            ids |= {f"{e}_meter_{mid}_last_telegram", f"{e}_meter_{mid}_last_received"}
+            type_name = hub.seen.get(mid, {}).get("type", "")
+            ids |= {f"{e}_meter_{mid}_{k}" for k in hub.meter_keys.get(mid, []) if meter_description(k, type_name)}
+    return ids
+
+
+# Diagnose-Sensoren je Modul aus Aufgabe 3 (hier nur für die Bereinigung bekannt)
+MODULE_INFO_KEYS: tuple[str, ...] = ()
 
 
 # ======================================================================= Entitäten
@@ -328,6 +422,18 @@ def _to_native(value, desc: SensorEntityDescription):
     return value
 
 
+def meter_device(entry, hub, meter_id: str, cfg: dict, type_name: str) -> DeviceInfo:
+    seen = hub.seen.get(meter_id, {})
+    return DeviceInfo(
+        identifiers={(DOMAIN, f"{entry.entry_id}_meter_{meter_id}")},
+        name=cfg.get(CONF_NAME) or f"{type_name or 'Zähler'} {meter_id}",
+        manufacturer=seen.get("manufacturer"),
+        model=type_name or None,
+        serial_number=meter_id,
+        via_device=(DOMAIN, entry.entry_id),
+    )
+
+
 class MeterSensor(_Base, RestoreSensor):
     """Messwert eines Wireless-M-Bus-Zählers."""
 
@@ -339,17 +445,10 @@ class MeterSensor(_Base, RestoreSensor):
         self.entity_description = desc
         self._meter_id = meter_id
         self._attr_unique_id = f"{entry.entry_id}_meter_{meter_id}_{desc.key}"
-        seen = self._hub.seen.get(meter_id, {})
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"{entry.entry_id}_meter_{meter_id}")},
-            name=cfg.get(CONF_NAME) or f"{type_name or 'Zähler'} {meter_id}",
-            manufacturer=seen.get("manufacturer"),
-            model=type_name or None,
-            serial_number=meter_id,
-            via_device=(DOMAIN, entry.entry_id),
-        )
+        self._attr_device_info = meter_device(entry, self._hub, meter_id, cfg, type_name)
         if initial and desc.key in initial:
             self._attr_native_value = _to_native(initial[desc.key], desc)
+        _with_fallback_name(self)
 
     @property
     def available(self) -> bool:
@@ -386,6 +485,7 @@ class RevoltSensor(_Base, RestoreSensor):
             name=name, manufacturer="Revolt", model="NC-5462", serial_number=rid,
             via_device=(DOMAIN, entry.entry_id),
         )
+        _with_fallback_name(self)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -421,6 +521,7 @@ class RawSensor(_Base):
         self._attr_translation_key = f"last_raw_{module_id}"
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
         self._attr_extra_state_attributes = {"line": None}
+        _with_fallback_name(self)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -454,6 +555,7 @@ class SeenMetersSensor(_Base):
         super().__init__(entry, None)
         self._attr_unique_id = f"{entry.entry_id}_seen_meters"
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
+        _with_fallback_name(self)
         self._last_write = 0.0
         self._unsub_later = None
         self._known = 0
@@ -576,6 +678,7 @@ class ClimateSensor(_Base, RestoreSensor):
         self._last_write = 0.0
         self._attr_unique_id = f"{entry.entry_id}_climate_{key}_{desc.key}"
         self._attr_device_info = climate_device(entry, key, cfg)
+        _with_fallback_name(self)
 
     @property
     def available(self) -> bool:
@@ -617,6 +720,7 @@ class LastRxSensor(_Base):
         self._attr_unique_id = f"{entry.entry_id}_last_rx_{module_id}"
         self._attr_translation_placeholders = {"module": module_id}
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
+        _with_fallback_name(self)
 
     @property
     def native_value(self):
@@ -640,6 +744,7 @@ class RxCountSensor(LastRxSensor):
     def __init__(self, entry, module_id: str) -> None:
         super().__init__(entry, module_id)
         self._attr_unique_id = f"{entry.entry_id}_rx_today_{module_id}"
+        _with_fallback_name(self)
 
     @property
     def native_value(self):
@@ -662,6 +767,7 @@ class ModeSensor(_Base):
         self._attr_unique_id = f"{entry.entry_id}_mode_{module_id}"
         self._attr_translation_placeholders = {"module": module_id}
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
+        _with_fallback_name(self)
 
     @property
     def available(self) -> bool:
@@ -698,3 +804,67 @@ class ModeSensor(_Base):
         self.async_on_remove(
             async_dispatcher_connect(self.hass, signal_module_info(self._entry.entry_id), self.async_write_ha_state)
         )
+
+
+class MeterRawSensor(_Base, RestoreEntity):
+    """Diagnose: Rohzeile des letzten Telegramms eines angelegten Zählers.
+
+    Zustand: Rohzeile (auf 255 Zeichen gekürzt), vollständig im Attribut "line" (nicht
+    aufgezeichnet). Gefüllt über hub.deliver – Live-Empfang und FHEM-Import gleich.
+    Nur für angelegte Zähler; Telegramme fremder Zähler erreichen diesen Sensor nie.
+    """
+
+    _attr_translation_key = "meter_last_telegram"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _unrecorded_attributes = frozenset({"line", "inneres_telegramm"})
+
+    def __init__(self, entry, meter_id: str, cfg: dict, type_name: str) -> None:
+        super().__init__(entry, None)
+        self._meter_id = meter_id
+        self._attr_unique_id = f"{entry.entry_id}_meter_{meter_id}_last_telegram"
+        self._attr_device_info = meter_device(entry, self._hub, meter_id, cfg, type_name)
+        self._attr_extra_state_attributes = {}
+        if info := self._hub.meter_raw.get(meter_id):
+            self._apply(info)
+        _with_fallback_name(self)
+
+    @property
+    def available(self) -> bool:
+        return self._attr_native_value is not None or super().available
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if self._attr_native_value is None and (last := await self.async_get_last_state()):
+            if last.state not in ("unknown", "unavailable"):
+                self._attr_native_value = last.state
+                self._attr_extra_state_attributes = dict(last.attributes)
+                for k in ("friendly_name", "icon", "device_class"):
+                    self._attr_extra_state_attributes.pop(k, None)
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, signal_meter_raw(self._entry.entry_id, self._meter_id), self._update
+            )
+        )
+
+    @callback
+    def _update(self, info: dict) -> None:
+        self._apply(info)
+        self.async_write_ha_state()
+
+    def _apply(self, info: dict) -> None:
+        line = info["line"]
+        meter_time = info.get("meter_time")
+        if isinstance(meter_time, datetime) and meter_time.tzinfo is None:
+            meter_time = meter_time.replace(tzinfo=dt_util.get_default_time_zone())
+        read_at = meter_time if isinstance(meter_time, datetime) else info["received"]
+        self._attr_native_value = line[:RAW_STATE_MAX]
+        self._attr_extra_state_attributes = {
+            "line": line,
+            "modul": info.get("module"),
+            "netzwerkknoten": bool(info.get("relayed")),
+            "ablesezeit": dt_util.as_local(read_at).isoformat(timespec="seconds"),
+            "empfangen": dt_util.as_local(info["received"]).isoformat(timespec="seconds"),
+            "lqi": info.get("lqi"),
+            "rssi": info.get("rssi"),
+            "inneres_telegramm": info.get("inner"),
+        }

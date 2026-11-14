@@ -304,6 +304,9 @@
       },
       "mode_status": {
         "name": "Empfangsmodus Modul {module}"
+      },
+      "meter_last_telegram": {
+        "name": "Letztes Telegramm (roh)"
       }
     }
   },

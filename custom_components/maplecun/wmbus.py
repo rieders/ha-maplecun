@@ -123,6 +123,16 @@ def _strip_format_b(raw: bytes) -> tuple[bytes, bytes]:
 
 def parse_cul_line(line: str) -> tuple[bytes, int | None]:
     """a-culfw-Zeile "b…" bzw. "bY…" -> (Telegramm ohne CRC, RSSI dBm)."""
+    frame, _lqi, rssi = parse_cul_line_status(line)
+    return frame, rssi
+
+
+def parse_cul_line_status(line: str) -> tuple[bytes, int | None, float | None]:
+    """a-culfw-Zeile -> (Telegramm ohne CRC, LQI, RSSI dBm).
+
+    Reihenfolge der angehängten Bytes laut a-culfw clib/rf_mbus.c: DH2(lqi); DH2(rssi);
+    am echten MapleCUN z. B. "…802A": LQI 0x80, RSSI 0x2A = -53 dBm.
+    """
     if not line.startswith("b"):
         raise WMBusError("keine Wireless-M-Bus-Zeile")
     hexpart = line[1:].split("::", 1)[0].strip()
@@ -136,7 +146,8 @@ def parse_cul_line(line: str) -> tuple[bytes, int | None]:
     if len(raw) < 12:
         raise WMBusError("Telegramm zu kurz")
     tele, rest = _strip_format_b(raw) if frame_b else _strip_format_a(raw)
-    return tele, cul_status(rest)[1]
+    lqi, rssi = cul_status(rest)
+    return tele, lqi, rssi
 
 
 def cul_status(rest: bytes) -> tuple[int | None, float | None]:
@@ -203,6 +214,7 @@ class Telegram:
     relayed: bool = False             # über Netzwerkknoten (CI A0) empfangen
     security_mode: int | None = None  # 0 unverschlüsselt, 5, 7 …
     mac_valid: bool | None = None     # AFL-MAC (Modus 7) geprüft?
+    inner: bytes | None = None        # eingepacktes Zählertelegramm (Netzwerkknoten/Repeater)
 
     @property
     def type_name(self) -> str:
@@ -633,6 +645,7 @@ def decode(
         # des Knotens wechselt mit jedem Telegramm und wird verworfen.
         sub = decode(tele[18:], keys, _depth + 1, header_only=header_only)
         sub.relayed = True
+        sub.inner = bytes(tele[18:])
         return sub
 
     def key_for(meter_id: str) -> bytes | None:
@@ -713,6 +726,7 @@ def decode(
         if inner is not None:
             sub = decode(inner, keys, _depth + 1, header_only=header_only)
             sub.via = t.meter_id
+            sub.inner = bytes(inner)
             return sub
         if header_only:
             return t

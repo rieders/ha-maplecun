@@ -123,12 +123,20 @@ async def test_import_real_line_sets_state(hass: HomeAssistant, setup, tmp_path,
     assert set(hub.seen) == {"52143909"} and set(hub.meter_keys) == {"52143909"}
     assert hub.heard == {}                                      # Import ist kein Empfang seit dem Start
     assert r["zaehler"][0]["zustand"] == "gesetzt"
+    # Rohzeile über denselben Weg wie beim Live-Empfang (hub.deliver)
+    raw = hass.states.get("sensor.wasser_52143909_last_telegram_raw")
+    assert raw.state.startswith("b4BC465B2769") and raw.attributes["line"].endswith("9FE880")
+    assert raw.attributes["netzwerkknoten"] is True and raw.attributes["lqi"] == 0x80
+    assert raw.attributes["rssi"] == -78.5 and raw.attributes["inneres_telegramm"]
+    assert raw.attributes["empfangen"].startswith("2026-11-12T07:40:35")
     rows = await _stats(hass)
     assert rows == [(datetime(2026, 11, 12, 3, 0, tzinfo=timezone.utc), 56.178, 0.0)]
     # übersteht ein Neuladen (gleicher Codepfad wie Live-Empfang)
     await hass.config_entries.async_reload(entry.entry_id)
     await _settle(hass, 0.5)
     assert float(hass.states.get(EID).state) == 56.178
+    assert hass.states.get("sensor.wasser_52143909_last_telegram_raw").state.startswith("b4BC465B2769")
+    assert hass.states.get("sensor.wasser_52143909_last_received").state not in ("unknown", "unavailable")
     # fremder Zähler nirgends gespeichert (Laufzeitdaten, Speicherdatei, Optionen, Statistik)
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()

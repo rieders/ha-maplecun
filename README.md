@@ -71,7 +71,7 @@ Viele Zähler senden nur ein- bis wenige Male am Tag – Geduld. Die Sensoren en
 
 * **Wasser** (warm/kalt): Zählerstand in m³ (`total_increasing`, direkt für das **Energie-Dashboard**)
 * **Heizkostenverteiler**: Verbrauchseinheiten (dimensionslos, `total_increasing`, am Stichtag zurückgesetzt)
-* Diagnose: Stichtagswert und Stichtag, Monatsendwert und Monatsende, Signalstärke, zuletzt empfangen (Zeitstempel, bleibt über Neustarts erhalten)
+* Diagnose: Stichtagswert und Stichtag, Monatsendwert und Monatsende, Signalstärke, zuletzt empfangen (Zeitstempel, bleibt über Neustarts erhalten), **Letztes Telegramm (roh)** (siehe [Rohdaten](#rohdaten))
 
 Name und AES-Schlüssel (verschlüsselte Zähler) unter **Konfigurieren → Zähler bearbeiten**; verschlüsselte Telegramme ohne Schlüssel werden nur geloggt.
 Ältere Zählerstände aus FHEM lassen sich [nachträglich importieren](#alte-zählerstände-aus-fhem-übernehmen).
@@ -231,6 +231,8 @@ Für einen einzelnen Zähler geht es auch mit seinem Diagnose-Sensor „Zuletzt 
 **„Rohdaten Modul N“** zeigt die letzte Rohzeile eines Moduls (433 MHz: nicht ausgewertete Zeilen; Wireless M-Bus: jede Telegrammzeile). Der Zustand ist auf 255 Zeichen gekürzt (Grenze von Home Assistant), die vollständige Zeile steht im Attribut `line` (nicht aufgezeichnet).
 Die Sensoren sind standardmäßig deaktiviert. Bei Wireless-M-Bus-Modulen laufen dort **auch Telegramme fremder Zähler** durch und landen – gekürzt – im Verlauf; nur zur Fehlersuche einschalten.
 
+Jeder **angelegte** Zähler hat zusätzlich den Diagnose-Sensor **„Letztes Telegramm (roh)“**: Zustand = Rohzeile seines letzten Telegramms (auf 255 Zeichen gekürzt), vollständig im Attribut `line` (nicht aufgezeichnet). Weitere Attribute: `modul`, `netzwerkknoten` (ja/nein), `ablesezeit` (Zeit aus dem Telegramm, sonst Empfangszeit), `empfangen`, `lqi`, `rssi` und bei weitergeleiteten Telegrammen `inneres_telegramm` (Hex). Live-Empfang und FHEM-Import füllen ihn über denselben Weg; der Wert übersteht Neustarts. Für fremde Zähler gibt es diesen Sensor nicht, ihre Zeilen werden nicht gespeichert.
+
 ### Thermometer (433 MHz)
 
 Unterstützt werden Protokolle mit Prüfsumme (aus FHEM `14_CUL_TCM97001.pm` portiert): **Mebus** (u. a. Hama), **GT-WT-02 / Type1** (Temperatur + Feuchte), **KW9010** (Tchibo/TFA, Temperatur + Feuchte) und **NX7674** (Rosenstein & Söhne Kühlschrank-Thermometer).
@@ -254,6 +256,7 @@ Codes aus FHEM: `list TYPE=IT DEF` → z. B. `FFFF0F0FFF FF F0` = Code, Ein, Aus
 * Verbindung je Modul per TCP (asyncio), automatischer Reconnect
 * Intertechno-Empfang (`i…`, Tristate) nach dem Aufbau von FHEM `10_IT.pm`
 * Upgrade von 0.1/0.2: bestehende Einträge und Revolts werden automatisch übernommen
+* Beim Laden entfernt die Integration alle Sensor-Einträge aus der Entitäts-Registry, die sie in dieser Version nicht mehr anlegt (frühere unique_ids, nicht mehr ausgewertete Schlüssel, entfernte Module und Zähler). Solche verwaisten Einträge erschienen in der Oberfläche nur mit dem Gerätenamen. Entfernte Einträge stehen im Log (Stufe INFO). Fehlt in einer Installation eine Übersetzung, zeigen die Sensoren den englischen Namen statt nur den Gerätenamen
 
 ## Alternative: wmbusmeters
 

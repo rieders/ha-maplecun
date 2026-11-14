@@ -165,7 +165,8 @@ async def async_import(
         unique_id = f"{entry.entry_id}_meter_{mid}_{m.key}"
         entity_id = ent_reg.async_get_entity_id("sensor", DOMAIN, unique_id)
         if newer and not dry_run:
-            hub.deliver(latest.tele, latest.rssi, latest.received.astimezone(timezone.utc), None)
+            hub.deliver(latest.tele, latest.rssi, latest.received.astimezone(timezone.utc), None,
+                        line=latest.line, lqi=latest.lqi)
             if entity_id is None:
                 entity_id = await _async_wait_entity(ent_reg, unique_id)
             # Zustand muss stehen, bevor der Anschluss der Statistik berechnet wird

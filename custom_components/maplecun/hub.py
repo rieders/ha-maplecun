@@ -69,6 +69,7 @@ from .const import (
     signal_it,
     signal_meter,
     signal_meter_new,
+    signal_meter_raw,
     signal_module_info,
     signal_raw,
     signal_rx,
@@ -160,6 +161,8 @@ class MapleCunHub:
         # Seit dem Start gehörte Zähler (eigene und fremde), nur Kopfdaten, nur im
         # Arbeitsspeicher – wird nie gespeichert und beginnt nach einem Neustart leer
         self.heard: dict[str, dict] = {}
+        # Letzte Rohzeile je ANGELEGTEM Zähler (nur Arbeitsspeicher; der Sensor stellt sie wieder her)
+        self.meter_raw: dict[str, dict] = {}
 
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{self.entry_id}")
         self._last_energy: dict[str, tuple[float, float]] = {}
@@ -681,7 +684,7 @@ class MapleCunHub:
     @callback
     def _handle_wmbus(self, mod: Module, line: str) -> None:
         try:
-            frame, rssi = wmbus.parse_cul_line(line)
+            frame, lqi, rssi = wmbus.parse_cul_line_status(line)
             # Zuerst nur die Kopfdaten: von fremden Zählern wird nichts entschlüsselt
             # oder dekodiert
             head = wmbus.decode(frame, header_only=True)
@@ -705,16 +708,22 @@ class MapleCunHub:
             return
         tele.rssi = rssi
         if tele.meter_id in self.meters:
-            self.deliver(tele, rssi, dt_util.utcnow(), mod.module_id)
+            self.deliver(tele, rssi, dt_util.utcnow(), mod.module_id, line=line, lqi=lqi)
 
     @callback
-    def deliver(self, tele: wmbus.Telegram, rssi: float | None, now, module_id: str | None) -> None:
+    def deliver(
+        self, tele: wmbus.Telegram, rssi: float | None, now, module_id: str | None,
+        line: str | None = None, lqi: int | None = None,
+    ) -> None:
         """Telegramm eines angelegten Zählers übernehmen.
 
         Gemeinsamer Codepfad für Live-Empfang und FHEM-Import: Kopfdaten speichern,
-        Entitäten anlegen bzw. aktualisieren. now = Empfangszeitpunkt (UTC).
+        Rohzeile melden, Entitäten anlegen bzw. aktualisieren. now = Empfangszeitpunkt (UTC).
+        Nur für angelegte Zähler aufrufen – von fremden Zählern wird nichts gespeichert.
         """
         mid = tele.meter_id
+        if mid not in self.meters:
+            return
         if module_id is None:
             module_id = self.seen.get(mid, {}).get("module")
         self.seen[mid] = {
@@ -733,8 +742,24 @@ class MapleCunHub:
             self.seen.pop(oldest, None)
         self._save_later(60)
 
+        first = mid not in self.meter_raw
+        if line is not None:
+            self.meter_raw[mid] = {
+                "line": line,
+                "module": module_id,
+                "relayed": tele.relayed,
+                "received": now,
+                "meter_time": tele.values().get("datetime") if tele.records else None,
+                "lqi": lqi,
+                "rssi": rssi,
+                "inner": tele.inner.hex().upper() if tele.inner else None,
+            }
+
         if tele.encrypted and not tele.records:
             _LOGGER.warning("Zähler %s sendet verschlüsselt – bitte AES-Schlüssel eintragen", mid)
+            if first and line is not None:
+                async_dispatcher_send(self.hass, signal_meter_new(self.entry_id), mid, tele, [], {})
+            self._send_raw(mid)
             return
 
         values = tele.values()
@@ -745,8 +770,15 @@ class MapleCunHub:
         if new_keys:
             self.meter_keys.setdefault(mid, []).extend(new_keys)
             self._save_later(1)
+        if new_keys or (first and line is not None):
             async_dispatcher_send(self.hass, signal_meter_new(self.entry_id), mid, tele, new_keys, values)
         async_dispatcher_send(self.hass, signal_meter(self.entry_id, mid), values)
+        self._send_raw(mid)
+
+    @callback
+    def _send_raw(self, mid: str) -> None:
+        if (info := self.meter_raw.get(mid)) is not None:
+            async_dispatcher_send(self.hass, signal_meter_raw(self.entry_id, mid), info)
 
     @callback
     def _note_heard(self, mod: Module, head: wmbus.Telegram, rssi: float | None) -> None:
@@ -830,4 +862,5 @@ class MapleCunHub:
     # ------------------------------------------------------------------ Aufräumen
     async def async_forget_meter(self, meter_id: str) -> None:
         self.meter_keys.pop(meter_id, None)
+        self.meter_raw.pop(meter_id, None)
         await self._store.async_save(self._store_data())
