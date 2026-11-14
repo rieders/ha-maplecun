@@ -193,3 +193,26 @@ def test_device_line_lqi_rssi_order():
     assert (head.manufacturer, head.meter_id) == ("TCH", "12345678")
     with pytest.raises(wmbus.WMBusError):         # Block-CRC wird geprüft
         wmbus.parse_cul_line(_flip(DEVICE_T_LINE, 30))
+
+
+# Eigener Warmwasserzähler 52144701, am 2026-11-14 10:18 im S-Modus (X21, brs) über den
+# Netzwerkknoten direkt am Split-Proxy empfangen – unverändert, mit LQI- und RSSI-Byte.
+DEVICE_S_LINE = (
+    "b4BC465B276900000F086DC0FA08311007D3E96003944653201471452B7021A067ADA0000000C1378950200"
+    "4C13426DED990000426C3F3C02BB560000326CFFFF7615046D2F074E3B82046C5F3A8C04137087CEB30200"
+    "2B2A800B"
+)
+
+
+def test_device_line_own_meter_s_mode():
+    frame, rssi = wmbus.parse_cul_line(DEVICE_S_LINE)
+    raw = bytes.fromhex(DEVICE_S_LINE[1:])
+    assert wmbus.cul_status(raw[-2:]) == (0x80, -68.5)     # LQI 0x80, RSSI 0x0B = 11/2 - 74
+    assert rssi == -68.5
+    t = wmbus.decode(frame)
+    assert (t.manufacturer, t.meter_id, t.type_name, t.relayed) == ("LSE", "52144701", "Warmwasser", True)
+    assert t.inner[:2].hex() == "3944"                      # inneres Telegramm: L=0x39, C=0x44
+    v = t.values()
+    assert v["volume"] == 29.578 and v["volume_s1"] == 9.942 and v["volume_s8"] == 28.77
+    assert str(v["date_s1"]) == "2025-12-31" and str(v["date_s8"]) == "2026-10-31"
+    assert str(v["datetime"]) == "2026-11-14 07:47:00"

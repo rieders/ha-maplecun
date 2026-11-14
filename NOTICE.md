@@ -37,6 +37,8 @@ erwartete Messwerte aus folgenden Quellen. Übernommen wurden nur diese Daten, k
 `tests/test_wmbus.py` enthält zwei Telegramme, die mit dem eigenen MapleCUN
 aufgezeichnet wurden, und eine direkt am Split-Proxy mitgeschnittene Zeile (T-Modus,
 a-culfw 1.26.08) eines fremden Zählers – anonymisiert: ID ersetzt, Block-CRCs neu berechnet.
+Dazu eine unveränderte Zeile des eigenen Warmwasserzählers 52144701 (S-Modus, über den
+Netzwerkknoten).
 
 `tests/culfw_sim.py` bildet das Verhalten von a-culfw nach (Antworten auf `V`, `?`, `br*`,
 `X`, `C`, `t`); Grundlage ist der Quelltext von a-culfw
