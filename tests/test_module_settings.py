@@ -47,3 +47,13 @@ def test_parse_replies():
 def test_raw_blocked():
     assert culcmd.raw_blocked("B01") and culcmd.raw_blocked("e")
     assert not culcmd.raw_blocked("V") and not culcmd.raw_blocked("brs")
+
+
+def test_real_device_replies():
+    """Antworten des echten MapleCUN (a-culfw 1.26.08) vom 2026-11-14, Modul 2 (433 MHz) und Modul 1."""
+    replies = ["C0D = 10 / 16", "C0E = B0 / 176", "C0F = 71 / 113", "C10 = 57 / 87",
+               "C1B = 07 /  7", "C1D = 90 / 144"]
+    regs = dict(culcmd.parse_reg(r) for r in replies)
+    assert culcmd.ccconf(regs) == {"freq": 433.92, "bwidth": 325, "rampl": 42, "sens": 4}
+    assert culcmd.parse_credit("21 3600") == 3600            # MAX_CREDIT 3600 (a-culfw 1.26.02)
+    assert culcmd.parse_uptime("13CA0777") == 2656058         # ca. 30,7 Tage

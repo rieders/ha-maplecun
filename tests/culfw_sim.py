@@ -22,9 +22,10 @@ from __future__ import annotations
 
 VERSION = "V 1.26.08 a-culfw Build: 323 (2019-08-03_09-32-54) MapleCUNx4_8F (F-Band: 868MHz) CUL"
 
-# Kommandotabellen fntab, fntab1, fntab2, fntab3 aus Devices/MapleCUN/main.c (Auszug)
+# Antworten auf "?" am echten Gerät (Module 1–3) bzw. laut Nutzer (Modul 4) – entspricht
+# fntab, fntab1, fntab2, fntab3 in Devices/MapleCUN/main.c
 CMDS = {
-    0: "B b C F i A Z N E G M K L U Y R T V W X e f m l t x z *",
+    0: "B b C F i A Z N E k G M K L U Y R T V W X e f l p t x z *",
     1: "b C F i A Z N E G M K L U Y R T V W X f x z *",
     2: "b C F i A Z N E G M K L U Y R T V W X f x z *",
     3: "C A Z N E L Y V X f z",
