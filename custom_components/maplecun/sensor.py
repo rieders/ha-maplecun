@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date, datetime
-import json
 import logging
-from pathlib import Path
 import re
 import time
 
@@ -42,6 +40,8 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
 from . import MapleCunConfigEntry
+from .devices import via_hub
+from .naming import with_fallback_name
 from .const import (
     CONFLICT_WMBUS,
     CONF_METERS,
@@ -72,26 +72,9 @@ _LOGGER = logging.getLogger(__name__)
 # Englische Namen aus strings.json als Rückfall: Home Assistant nimmt entity_description.name
 # nur, wenn die Übersetzung fehlt (Entity._name_internal). So zeigt eine Entität nie nur den
 # Gerätenamen, auch wenn die Übersetzungsdatei der Installation veraltet ist.
-_FALLBACK_NAMES: dict[str, str] = {
-    k: v.get("name", "")
-    for k, v in json.loads((Path(__file__).parent / "strings.json").read_text(encoding="utf-8"))
-    ["entity"]["sensor"].items()
-}
-
-
 def _with_fallback_name(entity: SensorEntity) -> None:
     """entity_description.name aus der Übersetzung (englisch) setzen, falls noch leer."""
-    key = entity.translation_key
-    if not key or key not in _FALLBACK_NAMES:
-        return
-    name = _FALLBACK_NAMES[key]
-    placeholders = getattr(entity, "_attr_translation_placeholders", None) or {}
-    try:
-        name = name.format(**placeholders)
-    except (KeyError, IndexError):
-        pass
-    desc = getattr(entity, "entity_description", None) or SensorEntityDescription(key=key)
-    entity.entity_description = replace(desc, name=name)
+    with_fallback_name(entity, "sensor", SensorEntityDescription)
 
 
 # ======================================================================= Revolt
@@ -459,7 +442,7 @@ def meter_device(entry, hub, meter_id: str, cfg: dict, type_name: str) -> Device
         manufacturer=seen.get("manufacturer"),
         model=type_name or None,
         serial_number=meter_id,
-        via_device=(DOMAIN, entry.entry_id),
+        **via_hub(entry),
     )
 
 
@@ -512,7 +495,7 @@ class RevoltSensor(_Base, RestoreSensor):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, f"{entry.entry_id}_revolt_{rid}")},
             name=name, manufacturer="Revolt", model="NC-5462", serial_number=rid,
-            via_device=(DOMAIN, entry.entry_id),
+            **via_hub(entry),
         )
         _with_fallback_name(self)
 
@@ -687,7 +670,7 @@ def climate_device(entry, key: str, cfg: dict) -> DeviceInfo:
         manufacturer="433 MHz",
         model=cfg.get(CONF_MODEL) or None,
         serial_number=key,
-        via_device=(DOMAIN, entry.entry_id),
+        **via_hub(entry),
     )
 
 

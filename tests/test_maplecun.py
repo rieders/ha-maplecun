@@ -157,7 +157,8 @@ async def test_config_flow(hass: HomeAssistant, mods):
     assert r["data"]["modules"]["2"]["role"] == "rf433"
     assert "FFFF0F0FFF" in r["options"]["it_devices"]
     await _settle(hass, 0.6)
-    assert _cmds(mods["1"])[:4] == ["V", "?", "X21", "brt"]
+    # SlowRF zuerst (wMBus kann vom letzten Lauf noch laufen -> brx), wMBus zuletzt
+    assert _cmds(mods["1"])[:5] == ["V", "?", "brx", "X21", "brt"]
     assert _cmds(mods["2"])[:3] == ["V", "?", "X21"]
     assert mods["4"].received == []           # monitor: nichts senden
     entry = hass.config_entries.async_entries(DOMAIN)[0]
@@ -256,7 +257,8 @@ async def test_full(hass: HomeAssistant, mods, caplog):
     month = hass.states.get("sensor.heizkostenverteiler_16660259_month_end_value")
     assert month.state == "486" and ents.async_get(month.entity_id).entity_category == "diagnostic"
     assert hass.states.get("sensor.heizkostenverteiler_16660259_month_end").state == "2026-10-31"
-    dev = dr.async_get(hass).async_get_device({(DOMAIN, f"{entry.entry_id}_meter_16660259")})
+    dev = next(d for d in dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
+               if (DOMAIN, f"{entry.entry_id}_meter_16660259") in d.identifiers)
     assert (dev.manufacturer, dev.model, dev.serial_number) == ("QDS", "Heizkostenverteiler", "16660259")
 
     # Zähler umbenennen
@@ -356,7 +358,7 @@ async def _setup(hass, mods, roles=("wmbus_t", "rf433", "off", "monitor"), init=
 async def test_wmbus_mode_acknowledged(hass: HomeAssistant, mods, firmware):
     """brt -> TMODE: Antwort ausgewertet, im Diagnose-Sensor sichtbar."""
     entry = await _setup(hass, mods)
-    assert _cmds(mods["1"]) == ["V", "?", "X21", "brt"]
+    assert _cmds(mods["1"]) == ["V", "?", "brx", "X21", "brt"]
     assert firmware.mode[0] == "wmbus_t"
     st = hass.states.get("sensor.maplecun_test_receive_mode_module_1")
     assert st.state == "TMODE"
@@ -414,7 +416,7 @@ async def test_wmbus_c_off_reply_other_firmware(hass: HomeAssistant, mods, firmw
     firmware.handle = lambda inst, cmd: (
         ["V 1.67 CUL868"] if cmd == "V" else orig(inst, cmd))
     entry = await _setup(hass, mods, roles=("wmbus_c", "rf433", "off", "monitor"))
-    assert _cmds(mods["1"]) == ["V", "?", "X21", "brc"]
+    assert _cmds(mods["1"]) == ["V", "?", "brx", "X21", "brc"]
     assert entry.runtime_data.modules["1"].unsupported == "no_cmode"
     await mods["1"].send("OFF")
     await _settle(hass)
@@ -454,7 +456,7 @@ async def test_wmbus_c_unsupported_frees_s_module(hass: HomeAssistant, mods, fir
     """Echte Ausgangslage: Modul 1 "C", Modul 3 "S". brc -> OFF, danach bekommt Modul 3 den Empfang."""
     entry = await _setup(hass, mods, roles=("wmbus_c", "rf433", "wmbus_s", "off"))
     await _settle(hass, 0.4)
-    assert _cmds(mods["3"]) == ["V", "?", "X21", "brs"]
+    assert _cmds(mods["3"]) == ["V", "?", "brx", "X21", "brs"]
     assert "brc" not in mods["1"].received
     assert firmware.receiving() == {2: "wmbus_s"}         # S-Empfang läuft wirklich
     assert hass.states.get("sensor.maplecun_test_receive_mode_module_3").state == "SMODE"

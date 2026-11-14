@@ -42,6 +42,11 @@ WMBUS_ROLES = (ROLE_WMBUS_C, ROLE_WMBUS_T, ROLE_WMBUS_S)
 # und sind damit idempotent. "X21" (set_txreport) schaltet das Modul auf SlowRF – es muss
 # deshalb VOR dem wMBus-Befehl kommen (wie in FHEM 00_CUL.pm: initString "X21\nbrs").
 ROLE_MODE_CMD = {ROLE_WMBUS_C: "brc", ROLE_WMBUS_T: "brt", ROLE_WMBUS_S: "brs"}
+WMBUS_OFF_CMD = "brx"       # wie FHEM 00_CUL.pm beim Wechsel zurück nach SlowRF
+# Reihenfolge (a-culfw clib/rf_receive.c, set_txrestore): solange irgendein Modul im wMBus-Modus
+# ist (globale Variable mbus_mode), lädt "X21" die CC1101-Konfiguration NICHT und startet den
+# Empfang nicht (kein ccInitChip, kein ccRX, GDO-Interrupt bleibt aus). SlowRF-Module werden
+# deshalb immer zuerst initialisiert; läuft wMBus schon, wird er dafür kurz ausgeschaltet.
 MODE_REPLY = {"brc": "CMODE", "brt": "TMODE", "brs": "SMODE"}
 MODE_REPLY_RE = r"^(SMODE|TMODE|CMODE|OFF)$|is unknown"
 ROLE_INIT = {
@@ -82,7 +87,10 @@ MODE_RETRY_DELAY = 300      # unaufgefordertes "OFF" eines wMBus-Moduls: höchst
 REPLY_TIMEOUT = 3.0         # Wartezeit auf eine Firmware-Antwort (s)
 WATCHDOG_SILENCE = 45 * 60  # wMBus-Modul ohne jede Zeile -> Modus neu setzen …
 WATCHDOG_REPEAT = 60 * 60   # … höchstens einmal pro Stunde
+WATCHDOG_SILENCE_SLOWRF = 15 * 60  # SlowRF-Modul (433 MHz) ohne jede Zeile -> neu initialisieren
 WATCHDOG_CHECK = 5 * 60     # Prüfintervall
+STARTUP_SLOWRF_WAIT = 15    # wMBus wartet beim Start höchstens so lange auf die SlowRF-Module (s)
+IT_REINIT_DELAY = 1.0       # nach einem Intertechno-Sendebefehl (Senden dauert einige 100 ms)
 INFO_SLOW_INTERVAL = 15 * 60  # credit10ms und Laufzeit höchstens alle 15 min lesen
 STORAGE_VERSION = 1
 SEEN_MAX = 200

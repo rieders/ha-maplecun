@@ -130,7 +130,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MapleCunConfigEntry) -> 
     hub = MapleCunHub(hass, entry)
     entry.runtime_data = hub
 
-    dr.async_get(hass).async_get_or_create(
+    hub_device = dr.async_get(hass).async_get_or_create(
         config_entry_id=entry.entry_id,
         identifiers={(DOMAIN, entry.entry_id)},
         name=entry.title,
@@ -138,6 +138,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MapleCunConfigEntry) -> 
         model="MapleCUN",
         configuration_url="https://wiki.fhem.de/wiki/MapleCUN",
     )
+    hub.device_id = hub_device.id          # für via_device_id der Teilgeräte (devices.py)
 
     await hub.async_start()
 

@@ -44,7 +44,7 @@ Ordner `custom_components/maplecun` nach `/config/custom_components/` kopieren, 
 
 * **Host** – IP des Rechners mit dem Split-Proxy
 * **Modul 1–4** – Port und Aufgabe (Wireless M-Bus T/S/C, 433 MHz, Nur überwachen, Aus)
-* **Empfangsmodus setzen** – schickt beim Verbinden `X21` und dann `brt`/`brs` (bzw. `brc`) und prüft die Antwort der Firmware (siehe [Empfangsmodus](#empfangsmodus-wireless-m-bus))
+* **Empfangsmodus setzen** – initialisiert beim Verbinden zuerst die 433-MHz-Module (`X21`), zuletzt das Wireless-M-Bus-Modul (`X21`, dann `brt`/`brs`) und prüft die Antwort der Firmware (siehe [Reihenfolge](#reihenfolge-433-mhz-zuerst-wireless-m-bus-zuletzt))
 * **Intertechno-Codes** – optional, z. B. `FFFF00FFFF, FFFF0F0FFF`
 
 ### Geräte finden und übernehmen
@@ -93,8 +93,20 @@ Was die Firmware mit den Befehlen macht (a-culfw `clib/rf_mbus.c`, `rf_mbus_func
 * `X21` muss **vor** dem Moduswechsel kommen (wie in FHEM 00_CUL.pm, `initString "X21\nbrs"`).
 * **Nur ein Modul gleichzeitig:** a-culfw schaltet beim Setzen von S oder T jedes andere Modul im wMBus-Modus ab (gemeinsamer Empfangspuffer). Modus und Empfangszustand sind globale Variablen (`mbus_mode`, `radio_mode`): ein Aus-Befehl (`brc`, `brx`) auf **irgendeinem** Modul setzt `mbus_mode = WMBUS_NONE` und beendet damit auch den Empfang des Moduls, das gerade S oder T hört. Die Integration sendet `brc` deshalb an a-culfw gar nicht erst. Die Integration lässt deshalb nur eine wMBus-Rolle zu; in einer älteren Konfiguration mit zwei wMBus-Modulen bekommt das erste den Empfang, das zweite zeigt „belegt durch Modul N“.
 * Antwortet die Firmware mit `OFF` auf `brc`, mit `? (… is unknown)` oder fehlt `b` in der Kommandoliste (Antwort auf `?`, z. B. beim vierten Modul des MapleCUN), wird die Rolle als **nicht unterstützt** markiert, der Befehl nicht erneut gesendet und unter **Konfigurieren → Funkmodule** ein Hinweis angezeigt. Der Befund gilt bis zu einem Rollen- oder Firmwarewechsel.
-* **Wächter:** Kommt von einem wMBus-Modul 45 Minuten lang keine einzige Zeile, wird der Modus einmal neu gesetzt (höchstens einmal pro Stunde, mit Log-Eintrag). Ein unaufgefordertes `OFF` (z. B. nach einem Befehl eines anderen Programms am Proxy) führt höchstens alle 5 Minuten zu einem erneuten Setzen.
+* **Wächter:** Kommt von einem wMBus-Modul 45 Minuten lang keine einzige Zeile, wird der Modus einmal neu gesetzt; bei einem 433-MHz-Modul nach 15 Minuten (dort senden Revolt, Thermometer usw. laufend). Höchstens einmal pro Stunde je Modul, mit Log-Eintrag „seit N min keine Zeile empfangen“. Ein unaufgefordertes `OFF` (z. B. nach einem Befehl eines anderen Programms am Proxy) führt höchstens alle 5 Minuten zu einem erneuten Setzen.
 * Der Diagnose-Sensor **„Empfangsmodus Modul N“** zeigt die letzte Antwort (`TMODE`, `SMODE`, `OFF`, „nicht unterstützt“, „belegt durch Modul N“), dazu Befehl, Zeitpunkt, Firmware-Version und Kommandoliste als Attribute.
+
+#### Reihenfolge: 433 MHz zuerst, Wireless M-Bus zuletzt
+
+`X21` lädt die CC1101-Konfiguration eines 433-MHz-Moduls und schaltet seinen Empfang ein – aber nur, solange **kein** Modul im Wireless-M-Bus-Modus ist: a-culfw `clib/rf_receive.c`, `set_txrestore` kehrt bei gesetztem `mbus_mode` sofort zurück („if mbus is activated the configuration must not be changed here, that leads to a crash!“). Dasselbe gilt nach dem Senden eines Intertechno-Befehls (`clib/intertechno.c`, `restore_RF_mode` → `set_txrestore`): der Chip bleibt in der Sende-Konfiguration, der Empfang aus. Am Gerät nachvollzogen (2026-11-14): `X21` auf Modul 2 bei laufendem S-Modus → keine Zeile; `brx`, `X21`, `brs` → Modul 2 empfängt nach 4 s, Modul 3 weiter im S-Modus.
+
+Deshalb, über eine gemeinsame Sperre (nacheinander, nie parallel je Modul):
+
+1. Beim Start/Neuladen werden die 433-MHz-Module zuerst initialisiert, das wMBus-Modul zuletzt (es wartet höchstens 15 s auf die 433-MHz-Module).
+2. Muss ein 433-MHz-Modul neu initialisiert werden, während wMBus läuft (Reconnect, „Modul N neu verbinden“, Optionsänderung, Wächter, nach Intertechno-Senden, neue Funkeinstellungen), wird wMBus kurz ausgeschaltet (`brx` an das wMBus-Modul, Antwort `OFF`), das 433-MHz-Modul mit `X21` initialisiert und wMBus wieder eingeschaltet (`X21`, `brs`/`brt`). wMBus fehlt dabei etwa eine Sekunde.
+3. Weil `X21` keine Antwort hat und jedes Modul eine eigene Verbindung zum Proxy hat, wartet die Integration nach `X21` auf die Antwort eines lesenden `X` desselben Moduls, bevor sie wMBus wieder einschaltet.
+
+Die lesenden Abfragen (`V`, `?`, `Cxx`, `X`, `t`) verändern nichts am Empfang (a-culfw `version`, `callfn2`, `ccreg`, `set_txreport` ohne Argument, `gettime`); am Gerät geprüft: Modul 2 empfängt nach `V` und `X` ohne Unterbrechung weiter.
 
 ### Modulwerte und Einstellungen (wie FHEM)
 
@@ -126,7 +138,7 @@ Einstellungen (wie FHEM `set`), alle **standardmäßig deaktiviert** (Kategorie 
 
 * **Frequenz, Bandbreite, Verstärkung, Empfindlichkeit, PA-Tabelle und LED schreibt a-culfw dauerhaft ins EEPROM.** Geschrieben wird nur nach einer Aktion (Oberfläche, Skript, Automation), nie beim Start; Wiederherstellen nach einem Neustart zeigt nur den letzten Wert an.
 * Vor dem ersten Schreiben liest die Integration die aktuelle `ccconf` und schreibt sie ins Log (Stufe WARNING, „Sicherung vor dem Schreiben ins EEPROM“), danach jeden geschriebenen Befehl.
-* Neue Werte lädt die Firmware mit `X21`. a-culfw überspringt das, solange irgendein Modul im Wireless-M-Bus-Modus ist (`set_txrestore`): dann wirken sie erst nach einem Neustart des MapleCUN (Hinweis im Log).
+* Neue Werte lädt die Firmware mit `X21`. Weil a-culfw das bei aktivem Wireless M-Bus überspringt (`set_txrestore`), schaltet die Integration wMBus dafür kurz aus (siehe [Reihenfolge](#reihenfolge-433-mhz-zuerst-wireless-m-bus-zuletzt)).
 * Module in einer Wireless-M-Bus-Rolle bekommen diese Entitäten nicht – die Firmware lädt dort eigene Funkeinstellungen.
 * ¹ a-culfw schreibt die PA-Tabelle immer in den EEPROM-Bereich von Modul 1 und lädt dessen Konfiguration in den Chip (`ccsetpa`); an anderen Modulen würde das die Einstellungen verbiegen.
 * `ITClock` bleibt nur im RAM des MapleCUN (bis zu dessen Neustart).
@@ -288,7 +300,7 @@ Gefundene Thermometer erscheinen unter *Gefundene Geräte* mit aktueller Tempera
 
 ### Intertechno
 
-Wird eine Intertechno-Fernbedienung oder ein Wandschalter gedrückt, erscheint der Code unter *Gefundene Geräte*. Übernommene Steckdosen lassen sich schalten, und ihr Zustand folgt auch der Fernbedienung.
+Wird eine Intertechno-Fernbedienung oder ein Wandschalter gedrückt, erscheint der Code unter *Gefundene Geräte*. Übernommene Steckdosen lassen sich schalten, und ihr Zustand folgt auch der Fernbedienung. Läuft gleichzeitig Wireless M-Bus, initialisiert die Integration das 433-MHz-Modul nach dem Senden neu (a-culfw stellt den Empfang dann nicht selbst wieder her).
 Codes aus FHEM: `list TYPE=IT DEF` → z. B. `FFFF0F0FFF FF F0` = Code, Ein, Aus. Manuell hinzufügen und Ein-/Aus-Codes ändern unter **Konfigurieren**.
 
 ## Technisches
@@ -305,7 +317,7 @@ Codes aus FHEM: `list TYPE=IT DEF` → z. B. `FFFF0F0FFF FF F0` = Code, Ein, Aus
 * Verbindung je Modul per TCP (asyncio), automatischer Reconnect
 * Intertechno-Empfang (`i…`, Tristate) nach dem Aufbau von FHEM `10_IT.pm`
 * Upgrade von 0.1/0.2: bestehende Einträge und Revolts werden automatisch übernommen
-* Beim Laden entfernt die Integration alle Sensor-Einträge aus der Entitäts-Registry, die sie in dieser Version nicht mehr anlegt (frühere unique_ids, nicht mehr ausgewertete Schlüssel, entfernte Module und Zähler). Solche verwaisten Einträge erschienen in der Oberfläche nur mit dem Gerätenamen. Entfernte Einträge stehen im Log (Stufe INFO). Fehlt in einer Installation eine Übersetzung, zeigen die Sensoren den englischen Namen statt nur den Gerätenamen
+* Beim Laden entfernt die Integration alle Sensor-Einträge aus der Entitäts-Registry, die sie in dieser Version nicht mehr anlegt (frühere unique_ids, nicht mehr ausgewertete Schlüssel, entfernte Module und Zähler). Solche verwaisten Einträge erschienen in der Oberfläche nur mit dem Gerätenamen. Entfernte Einträge stehen im Log (Stufe INFO). Fehlt in einer Installation eine Übersetzung (z. B. veraltete `translations/de.json` nach einem unvollständigen Update), zeigen alle Entitäten – Sensoren, Buttons, Zahlen, Auswahlen, Verbindungsstatus – den englischen Namen statt nur den Gerätenamen. Entitäten, die schon mit dem Gerätenamen als ID angelegt wurden (z. B. `number.maplecun_192_168_1_228_2`), behalten ihre ID; sie lassen sich in den Entitätseinstellungen ändern
 
 ## Alternative: wmbusmeters
 

@@ -128,14 +128,20 @@ async def test_write_settings_backup_first(hass: HomeAssistant, mods, firmware, 
     await hass.config_entries.async_unload(entry.entry_id)
 
 
-async def test_write_while_wmbus_active_warns(hass: HomeAssistant, mods, firmware, caplog):
+async def test_write_while_wmbus_active_reloads(hass: HomeAssistant, mods, firmware, caplog):
+    """Bei aktivem wMBus lädt X21 nichts – deshalb wMBus kurz aus, X21, wMBus wieder ein."""
     ents = [f"select.{P}_set_sensitivity_module_2"]
     entry = await _setup(hass, mods, enable=ents)          # Modul 1 im T-Modus
+    start = len(firmware.sent)
     await hass.services.async_call("select", "select_option", {"entity_id": ents[0], "option": "12"}, blocking=True)
     await _settle(hass)
-    assert (1, "W1F92") in firmware.sent
-    assert "erst nach einem Neustart des MapleCUN" in caplog.text
-    assert firmware.receiving() == {0: "wmbus_t"}            # wMBus-Empfang unberührt
+    sent = firmware.sent[start:]
+    seq = [x for x in sent if x[1] in ("brx", "X21", "brt")]
+    assert seq == [(0, "brx"), (1, "X21"), (0, "X21"), (0, "brt")]
+    assert sent.index((1, "W1F92")) < sent.index((1, "X21"))     # gleiche Verbindung: erst schreiben
+    assert firmware.regs[1][0x1D] == 0x92                    # neue Empfindlichkeit wirklich geladen
+    assert firmware.receiving() == {0: "wmbus_t"}            # wMBus-Empfang wieder an
+    assert firmware.slow_receiving(1)
     await hass.config_entries.async_unload(entry.entry_id)
 
 

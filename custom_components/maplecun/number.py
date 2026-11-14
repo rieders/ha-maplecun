@@ -6,7 +6,12 @@ geschrieben wird ausschließlich nach einer Nutzeraktion (nie beim Start).
 
 from __future__ import annotations
 
-from homeassistant.components.number import NumberDeviceClass, NumberMode, RestoreNumber
+from homeassistant.components.number import (
+    NumberDeviceClass,
+    NumberEntityDescription,
+    NumberMode,
+    RestoreNumber,
+)
 from homeassistant.const import EntityCategory, UnitOfFrequency, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -16,6 +21,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MapleCunConfigEntry
 from .const import DOMAIN, ROLE_RF433, signal_connection, signal_module_info
+from .naming import with_fallback_name
 
 
 async def async_setup_entry(
@@ -47,6 +53,7 @@ class _Base(RestoreNumber):
         self._mid = module_id
         self._attr_translation_placeholders = {"module": module_id}
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
+        with_fallback_name(self, "number", NumberEntityDescription)
 
     @property
     def available(self) -> bool:

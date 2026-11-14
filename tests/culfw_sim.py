@@ -12,7 +12,12 @@ Nachgebildet nach dem a-culfw-Quelltext (github.com/heliflieger/a-culfw, Stand d
 * "br", "b"          -> nur Status – global (mbus_mode/radio_mode), nicht je Modul:
                         am echten Gerät antwortete Modul 3 "TMODE", als Modul 1 auf T stand
 * wMBus auf einem Modul schaltet jedes andere wMBus-Modul ab     (clib/rf_mode.c:170)
-* "X21"              -> SlowRF (beendet wMBus auf diesem Modul), keine Antwort; "X" -> "21  900"
+* "X21"              -> SlowRF (beendet wMBus auf diesem Modul), keine Antwort; "X" -> "21  900".
+                        set_txrestore (clib/rf_receive.c:137) kehrt sofort zurück, solange
+                        mbus_mode gesetzt ist: dann wird der CC1101 NICHT neu geladen und nicht
+                        in den Empfang geschaltet – ein vorher gestörtes Modul bleibt stumm
+* "is…"              -> Intertechno senden (clib/intertechno.c): Chip wird umkonfiguriert,
+                        danach restore_RF_mode -> set_txrestore – bei aktivem wMBus wirkungslos
 * "Cxx"              -> "Cxx = HH / DDD"                         (clib/cc1100.c, ccreg)
 * "t"                -> 8 Hex-Ziffern (Ticks à 8 ms)              (clib/clock.c)
 * "Wxxyy"            -> EEPROM schreiben (nur protokolliert)
@@ -42,6 +47,9 @@ class Firmware:
         self.mode = {i: "off" for i in range(4)}     # CC1101.RF_mode je Instanz
         self.mbus = "off"                             # globales mbus_mode
         self.txreport = {i: 0 for i in range(4)}
+        # Zustand des CC1101 selbst: "slow" (SlowRF-Konfiguration, RX, Interrupt an), "wmbus",
+        # "it" (nach Intertechno-Senden) oder "idle"
+        self.chip = {i: "idle" for i in range(4)}
         self.regs = {i: dict(DEFAULT_REGS) for i in range(4)}
         self.eeprom: list[tuple[int, str]] = []        # (Instanz, "Wxxyy")
         self.eeprom_regs = {i: {} for i in range(4)}   # geschriebene CC1101-Register je Instanz
@@ -57,6 +65,20 @@ class Firmware:
     def receiving(self) -> dict[int, str]:
         """Instanzen, die tatsächlich wMBus empfangen (RF_mode wMBus und mbus_mode gesetzt)."""
         return {i: m for i, m in self.mode.items() if m.startswith("wmbus") and self.mbus == m}
+
+    def slow_receiving(self, inst: int) -> bool:
+        """Empfängt das Modul tatsächlich SlowRF (433 MHz)?"""
+        return self.mode[inst] == "slow" and self.chip[inst] == "slow"
+
+    def _txrestore(self, inst: int) -> None:
+        """clib/rf_receive.c set_txrestore: bei aktivem wMBus ohne jede Wirkung."""
+        if self.mbus != "off":
+            return
+        if self.txreport[inst]:
+            self.regs[inst].update(self.eeprom_regs[inst])      # set_ccon -> ccInitChip
+            self.chip[inst] = "slow" if inst < 3 else "idle"     # ccRX nur für NUM_SLOWRF
+        else:
+            self.chip[inst] = "idle"                             # set_ccoff
 
     def handle(self, inst: int, cmd: str) -> list[str]:
         if cmd:
@@ -76,16 +98,21 @@ class Firmware:
                     for other in self.mode:              # rf_mode.c: nur ein wMBus-Modul
                         if other != inst and self.mode[other].startswith("wmbus"):
                             self.mode[other] = "off"
+                            self.chip[other] = "idle"
                 self.mode[inst] = new
                 self.mbus = new
+                self.chip[inst] = "wmbus" if new != "off" else "idle"
             return [self._status(inst)]
         if c == "X":
             if len(cmd) == 1:
                 return [f"{self.txreport[inst]:02X}{self.credit:5d}"]
             self.txreport[inst] = int(cmd[1:3], 16)
-            self.mode[inst] = "slow" if self.txreport[inst] else "off"
-            if self.mbus == "off":                       # set_txrestore: nicht bei aktivem wMBus
-                self.regs[inst].update(self.eeprom_regs[inst])
+            self.mode[inst] = "slow" if self.txreport[inst] and inst < 3 else "off"
+            self._txrestore(inst)
+            return []
+        if c == "i" and cmd.startswith("is"):
+            self.chip[inst] = "it"                       # it_tunein: SRES, IT-Register, GDO als Ausgang
+            self._txrestore(inst)                        # restore_RF_mode -> set_RF_mode(slow)
             return []
         if c == "C" and len(cmd) == 3:
             reg = int(cmd[1:], 16)

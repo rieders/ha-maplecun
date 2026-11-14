@@ -28,33 +28,83 @@ def _entry(hass, mods, meters=("52144701", "16660259"), roles=("wmbus_t", "rf433
     return entry
 
 
-@pytest.mark.parametrize("language", ["de", "en"])
-async def test_every_entity_has_a_name(hass: HomeAssistant, mods, language):
-    hass.config.language = language
-    entry = _entry(hass, mods)
+# Alles einrichten, was Entitäten erzeugt: Zähler, Revolt, Intertechno, Thermometer
+FULL_OPTIONS = {
+    "init_mode": True,
+    "meters": {"52144701": {"name": "", "key": ""}, "16660259": {"name": "", "key": ""}},
+    "revolts": {"3a65": {"name": "Revolt 3a65"}},
+    "it_devices": {"FFFF0F0FFF": {"name": "Lampe", "on": "FF", "off": "F0"}},
+    "sensors": {"mebus_84_1": {"name": "Thermometer mebus_84_1", "model": "Mebus"}},
+}
+REVOLT = "r3a65E6006432" "08FC" "64" "04D2"
+CLIMATE = "s6840BA60DC;  416: 9584"
+# Intertechno-Schalter: einzige Funktion seines eigenen Geräts ("Lampe") – heißt bewusst wie das
+# Gerät (HA-Konvention _attr_name = None), nicht wie der MapleCUN
+MAIN_FEATURE_DOMAINS = {"switch"}
+
+
+async def _check_all_names(hass, mods):
+    """Jede Entität aller Plattformen (auch standardmäßig deaktivierte) hat einen eigenen Namen."""
+    entry = MockConfigEntry(domain=DOMAIN, version=2, title="MapleCUN 192.168.1.228", unique_id="127.0.0.1",
+        data={"host": "127.0.0.1", "modules": _modules(mods, ("wmbus_t", "rf433", "monitor", "off"))},
+        options=FULL_OPTIONS)
+    entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await _settle(hass, 0.6)
     await mods["1"].send(WARM)
     await mods["1"].send(RELAYED_HCA)
+    await mods["2"].send(REVOLT)
+    await mods["2"].send(CLIMATE)
     await _settle(hass, 0.6)
-
     ent_reg, dev_reg = er.async_get(hass), dr.async_get(hass)
     entries = er.async_entries_for_config_entry(ent_reg, entry.entry_id)
-    assert len(entries) > 20
-    nameless = []
+    # Deaktivierte einschalten, damit auch ihr Name über den Zustand geprüft wird
+    for ent in entries:
+        if ent.disabled_by:
+            ent_reg.async_update_entity(ent.entity_id, disabled_by=None)
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await _settle(hass, 0.6)
+    entries = er.async_entries_for_config_entry(ent_reg, entry.entry_id)
+    domains = {e.domain for e in entries}
+    assert {"sensor", "binary_sensor", "button", "number", "select", "switch"} <= domains, domains
+    assert len(entries) > 40
+    bad = []
     for ent in entries:
         dev = dev_reg.async_get(ent.device_id)
-        # Name in der Registry (so zeigt die Oberfläche auch deaktivierte Entitäten an)
-        if not ent.original_name:
-            nameless.append(ent.entity_id)
+        dev_name = dev.name_by_user or dev.name
+        state = hass.states.get(ent.entity_id)
+        friendly = state.attributes.get("friendly_name") if state else None
+        if ent.domain in MAIN_FEATURE_DOMAINS:
+            assert friendly == dev_name
             continue
-        if ent.disabled_by:
-            continue
-        friendly = hass.states.get(ent.entity_id).attributes.get("friendly_name")
-        if friendly == (dev.name_by_user or dev.name):
-            nameless.append(ent.entity_id)
-    assert nameless == []
+        if not ent.original_name or not friendly or not friendly.strip() or friendly == dev_name:
+            bad.append((ent.entity_id, ent.original_name, friendly))
     await hass.config_entries.async_unload(entry.entry_id)
+    return bad
+
+
+@pytest.mark.parametrize("language", ["de", "en"])
+async def test_every_entity_of_every_platform_has_a_name(hass: HomeAssistant, mods, language):
+    hass.config.language = language
+    assert await _check_all_names(hass, mods) == []
+
+
+@pytest.mark.parametrize("language", ["de", "en"])
+async def test_names_without_translations(hass: HomeAssistant, mods, language, monkeypatch):
+    """Fehlt die Übersetzung in der Installation (veraltete/fehlende translations/*.json),
+    bekommt jede Entität den englischen Rückfallnamen statt nur den Gerätenamen."""
+    from homeassistant.helpers import translation
+
+    orig = translation.async_get_translations
+
+    async def no_entity_translations(hass_, lang, category, integrations=None, *args, **kwargs):
+        if category == "entity" and integrations and DOMAIN in integrations:
+            return {}
+        return await orig(hass_, lang, category, integrations, *args, **kwargs)
+
+    monkeypatch.setattr(translation, "async_get_translations", no_entity_translations)
+    hass.config.language = language
+    assert await _check_all_names(hass, mods) == []
 
 
 def test_translation_keys_complete():

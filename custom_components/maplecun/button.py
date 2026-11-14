@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from homeassistant.components.button import ButtonEntity
+from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -10,6 +10,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MapleCunConfigEntry
 from .const import DOMAIN
+from .naming import with_fallback_name
 
 
 async def async_setup_entry(
@@ -42,6 +43,7 @@ class RefreshButton(_Base):
     def __init__(self, entry) -> None:
         super().__init__(entry)
         self._attr_unique_id = f"{entry.entry_id}_refresh_info"
+        with_fallback_name(self, "button", ButtonEntityDescription)
 
     async def async_press(self) -> None:
         await self._hub.async_refresh_all()
@@ -58,6 +60,7 @@ class ReopenButton(_Base):
         self._mid = module_id
         self._attr_unique_id = f"{entry.entry_id}_reopen_{module_id}"
         self._attr_translation_placeholders = {"module": module_id}
+        with_fallback_name(self, "button", ButtonEntityDescription)
 
     async def async_press(self) -> None:
         await self._hub.async_reopen(self._mid)

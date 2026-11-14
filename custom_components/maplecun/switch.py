@@ -15,6 +15,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import MapleCunConfigEntry
+from .devices import via_hub
 from .const import CONF_IT_DEVICES, CONF_NAME, CONF_OFF, CONF_ON, DOMAIN, ROLE_RF433, signal_connection, signal_it
 
 
@@ -62,7 +63,7 @@ class IntertechnoSwitch(SwitchEntity, RestoreEntity):
             name=dev.get(CONF_NAME) or f"Intertechno {code}",
             manufacturer="Intertechno",
             model=f"Tristate {code}",
-            via_device=(DOMAIN, entry.entry_id),
+            **via_hub(entry),
         )
 
     @property
@@ -95,7 +96,7 @@ class IntertechnoSwitch(SwitchEntity, RestoreEntity):
 
     async def _send(self, suffix: str, state: bool) -> None:
         try:
-            await self._hub.async_send(self._mid, f"is{self._code}{suffix}")
+            await self._hub.async_send_it(self._mid, f"is{self._code}{suffix}")
         except (ConnectionError, OSError) as err:
             raise HomeAssistantError(f"Senden an MapleCUN fehlgeschlagen: {err}") from err
         self._attr_is_on = state

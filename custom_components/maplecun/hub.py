@@ -46,13 +46,16 @@ from .const import (
     MODE_RETRY_DELAY,
     RECONNECT_DELAY,
     REPLY_TIMEOUT,
-    ROLE_INIT,
     ROLE_MODE_CMD,
     ROLE_MONITOR,
     ROLE_NEEDS,
     ROLE_OFF,
     HEARD_MAX,
     INFO_SLOW_INTERVAL,
+    IT_REINIT_DELAY,
+    STARTUP_SLOWRF_WAIT,
+    WATCHDOG_SILENCE_SLOWRF,
+    WMBUS_OFF_CMD,
     ROLE_RF433,
     ROLE_WMBUS_C,
     SEEN_MAX,
@@ -105,6 +108,9 @@ class Module:
     mode_retry: float = -1e9          # letztes erneutes Setzen nach "OFF" (monotonic)
     last_line: float = 0.0            # monotonic der letzten Zeile (oder des Verbindens)
     watchdog_at: float = -1e9         # letztes Neusetzen durch den Wächter (monotonic)
+    # SlowRF (433 MHz): zuletzt mit "X21" initialisiert, und ob wMBus dabei sicher aus war
+    radio_at: object = None
+    radio_ok: bool = False
     # Firmware
     version: str | None = None        # Antwort auf "V"
     cmds: str | None = None           # Antwort auf "?", nur die Buchstaben, z. B. "bCFiAZ…"
@@ -135,6 +141,7 @@ class MapleCunHub:
         self.entry = entry
         self.entry_id: str = entry.entry_id
         self.host: str = entry.data["host"]
+        self.device_id: str | None = None        # Geräteregistrierung (MapleCUN), setzt __init__
         opts = entry.options
         self.init_mode: bool = opts.get(CONF_INIT, True)
         self.auto: dict[str, bool] = {**DEFAULT_AUTO, **opts.get(CONF_AUTO, {})}
@@ -171,6 +178,14 @@ class MapleCunHub:
         self._notified = 0
         self._modes: dict[str, dict] = {}
         self._unsub_watchdog = None
+        # Initialisierung der Funkmodule: eine gemeinsame Sperre für alle Module, weil a-culfw
+        # den wMBus-Zustand global führt (SlowRF zuerst, wMBus zuletzt – siehe const.py)
+        self._radio_lock = asyncio.Lock()
+        self._wmbus_on: bool | None = None       # None = unbekannt (z. B. vom letzten Lauf)
+        self._wmbus_started = False              # wMBus-Modul hat seine erste Initialisierung hinter sich
+        self._slowrf_ready = asyncio.Event()     # alle SlowRF-Module einmal initialisiert (Start)
+        self._owner_known = asyncio.Event()      # wMBus-Modul hat V/? beantwortet (Start)
+        self._it_reinit: dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------ Lebenszyklus
     async def async_start(self) -> None:
@@ -195,6 +210,9 @@ class MapleCunHub:
             elif saved:
                 saved.update(role=mod.role, unsupported=None)
         self._update_conflicts()
+        self._check_slowrf_ready()
+        if self.wmbus_owner() is None or not self.init_mode:
+            self._owner_known.set()
         for mod in self.modules.values():
             mod.task = self.hass.async_create_background_task(
                 self._run(mod), f"{DOMAIN}_{self.entry_id}_module_{mod.module_id}"
@@ -208,6 +226,8 @@ class MapleCunHub:
         if self._unsub_watchdog:
             self._unsub_watchdog()
             self._unsub_watchdog = None
+        for task in self._it_reinit.values():
+            task.cancel()
         for mod in self.modules.values():
             if mod.task:
                 mod.task.cancel()
@@ -359,7 +379,22 @@ class MapleCunHub:
             return                     # "Nur überwachen": von sich aus nichts senden
         try:
             await self._async_identify(mod)
+            if mod.is_wmbus and self.wmbus_owner() in (None, mod.module_id):
+                self._owner_known.set()
             if self.init_mode:
+                if mod.role == ROLE_RF433:
+                    # Erst wissen, ob und wo wMBus läuft (Firmware, Rolle unterstützt?)
+                    try:
+                        await asyncio.wait_for(self._owner_known.wait(), STARTUP_SLOWRF_WAIT)
+                    except asyncio.TimeoutError:
+                        _LOGGER.debug("Modul %s: wMBus-Modul meldet sich nicht", mod.module_id)
+                        self._owner_known.set()          # nicht bei jedem Reconnect erneut warten
+                elif mod.is_wmbus:
+                    # wMBus zuletzt: erst die SlowRF-Module (höchstens STARTUP_SLOWRF_WAIT s)
+                    try:
+                        await asyncio.wait_for(self._slowrf_ready.wait(), STARTUP_SLOWRF_WAIT)
+                    except asyncio.TimeoutError:
+                        _LOGGER.debug("Modul %s: SlowRF-Module noch nicht bereit, wMBus trotzdem", mod.module_id)
                 await self.async_set_mode(mod.module_id, "Verbinden")
             await self.async_refresh_info(mod.module_id)
         except (OSError, ConnectionError) as err:
@@ -373,6 +408,9 @@ class MapleCunHub:
                 _LOGGER.info("Modul %s: neue Firmware (%s), Rolle wird erneut geprüft", mod.module_id, ver)
                 mod.unsupported = None
             mod.version = ver
+            if mod.role == ROLE_WMBUS_C and "a-culfw" in ver:
+                # "brc" landet in a-culfw im Aus-Zweig (siehe _set_wmbus_locked) – gar nicht senden
+                self._mark_unsupported(mod, UNSUPPORTED_NO_CMODE, None)
         reply = await self.async_request(mod.module_id, "?", r"Use one of")
         if reply:
             mod.cmds = parse_cmds(reply)
@@ -437,19 +475,96 @@ class MapleCunHub:
             mod.conflict = owner if (mod.is_wmbus and not mod.unsupported and owner != mod.module_id) else None
 
     async def async_set_mode(self, module_id: str, reason: str) -> str | None:
-        """Empfangsmodus der Rolle setzen und die Antwort der Firmware auswerten.
+        """Modul in den Betrieb seiner Rolle bringen und die Antwort der Firmware auswerten.
 
         Idempotent: "X21" und "brs"/"brt" initialisieren den CC1101 jedes Mal neu, egal in
-        welchem Zustand er vorher war. Liefert die Antwort (bzw. None).
+        welchem Zustand er vorher war. Alle Module teilen sich eine Sperre (nacheinander,
+        nicht parallel), SlowRF-Module werden vor wMBus initialisiert. Liefert die Antwort
+        auf den wMBus-Befehl (bzw. None).
         """
         mod = self.modules.get(module_id)
         if mod is None or not mod.connected:
             return None
         if mod.role == ROLE_RF433:
-            for cmd in ROLE_INIT[ROLE_RF433]:
-                await self.async_send(module_id, cmd)
+            await self.async_init_slowrf([module_id], reason)
             return None
         if not mod.is_wmbus:
+            return None
+        async with self._radio_lock:
+            return await self._set_wmbus_locked(mod, reason)
+
+    def _active_owner(self) -> Module | None:
+        """Verbundenes Modul, das den wMBus-Empfang hat (falls eingerichtet)."""
+        owner = self.wmbus_owner()
+        mod = self.modules.get(owner) if owner else None
+        return mod if mod is not None and mod.connected else None
+
+    async def async_init_slowrf(self, module_ids: list[str], reason: str) -> None:
+        """SlowRF-Module (neu) initialisieren; läuft wMBus, wird er dafür kurz ausgeschaltet."""
+        async with self._radio_lock:
+            await self._init_slowrf_locked(module_ids, reason, rearm=True)
+
+    async def _init_slowrf_locked(self, module_ids: list[str], reason: str, rearm: bool) -> None:
+        """Ablauf (nur mit gehaltener Sperre):
+
+        1. wMBus aus ("brx" an das wMBus-Modul, Antwort "OFF"), falls er laufen könnte –
+           sonst lädt "X21" die Konfiguration nicht (a-culfw rf_receive.c, set_txrestore)
+        2. "X21" an jedes SlowRF-Modul: set_txreport -> set_RF_mode(slow) -> set_txrestore
+           -> ccInitChip(EE_CC1100_CFGn) + ccRX (Empfang und GDO-Interrupt an)
+        3. wMBus wieder ein (nur wenn er in Schritt 1 ausgeschaltet wurde und rearm)
+        """
+        mods = [
+            self.modules[m] for m in module_ids
+            if m in self.modules and self.modules[m].role == ROLE_RF433 and self.modules[m].connected
+        ]
+        if not mods:
+            return
+        owner = self._active_owner()
+        paused = False
+        # Ohne "Empfangsmodus setzen" wird wMBus nicht angefasst (nur X21 wie bisher)
+        if owner is not None and self.init_mode and self._wmbus_on is not False:
+            reply = await self.async_request(owner.module_id, WMBUS_OFF_CMD, MODE_REPLY_RE)
+            owner.mode_cmd, owner.mode_reply, owner.mode_time = WMBUS_OFF_CMD, reply, dt_util.utcnow()
+            if reply == "OFF":
+                self._wmbus_on, paused = False, True
+            _LOGGER.info(
+                "wMBus auf Modul %s kurz ausgeschaltet (%s -> %s), damit Modul %s initialisiert werden kann (%s)",
+                owner.module_id, WMBUS_OFF_CMD, reply, ", ".join(m.module_id for m in mods), reason,
+            )
+        # Ohne eingerichtetes wMBus-Modul schaltet die Integration wMBus nie ein
+        known_off = self._wmbus_on is False or self.wmbus_owner() is None
+        for mod in mods:
+            await self.async_send(mod.module_id, "X21")
+            # "X21" hat keine Antwort. Jedes Modul hat eine eigene TCP-Verbindung, die Reihenfolge
+            # zwischen Modulen ist also nicht garantiert: erst weiter (wMBus wieder ein), wenn die
+            # Firmware ein nachfolgendes "X" (nur lesen) beantwortet hat – dann ist X21 verarbeitet.
+            ack = await self.async_request(mod.module_id, "X", r"^[0-9A-F]{2} +\d*$")
+            if ack is None:
+                _LOGGER.warning("Modul %s: keine Antwort auf X nach X21 (%s)", mod.module_id, reason)
+            mod.radio_at, mod.radio_ok = dt_util.utcnow(), known_off
+            if known_off:
+                _LOGGER.info("Modul %s: SlowRF initialisiert (X21, %s)", mod.module_id, reason)
+            else:
+                _LOGGER.warning(
+                    "Modul %s: X21 gesendet, aber das wMBus-Modul ist nicht verbunden – falls wMBus "
+                    "noch läuft, empfängt das Modul erst nach dessen Neuinitialisierung (%s)",
+                    mod.module_id, reason,
+                )
+        self._check_slowrf_ready()
+        if paused and rearm and owner is not None and owner.connected and self._wmbus_started:
+            await self._set_wmbus_locked(owner, f"{reason}, nach SlowRF")
+        async_dispatcher_send(self.hass, signal_module_info(self.entry_id))
+
+    @callback
+    def _check_slowrf_ready(self) -> None:
+        if all(m.radio_at is not None or not self.init_mode
+               for m in self.modules.values() if m.role == ROLE_RF433):
+            self._slowrf_ready.set()
+
+    async def _set_wmbus_locked(self, mod: Module, reason: str) -> str | None:
+        """wMBus-Modus setzen (nur mit gehaltener Sperre)."""
+        module_id = mod.module_id
+        if not mod.connected:
             return None
         if mod.unsupported:
             _LOGGER.debug("Modul %s: Rolle %s nicht unterstützt (%s), nichts gesendet",
@@ -472,23 +587,33 @@ class MapleCunHub:
             async_dispatcher_send(self.hass, signal_module_info(self.entry_id))
             return None
         mod.skipped = False
+        # SlowRF-Module, die noch nicht sicher initialisiert sind, zuerst (wMBus ist danach aus)
+        pending = [m.module_id for m in self.modules.values()
+                   if m.role == ROLE_RF433 and m.connected and not m.radio_ok]
+        if pending:
+            await self._init_slowrf_locked(pending, reason, rearm=False)
         cmd = ROLE_MODE_CMD[mod.role]
         await self.async_send(module_id, "X21")           # RSSI/LQI anhängen (schaltet auf SlowRF)
         reply = await self.async_request(module_id, cmd, MODE_REPLY_RE)
+        self._wmbus_started = True
         mod.mode_cmd, mod.mode_time = cmd, dt_util.utcnow()
         expected = MODE_REPLY[cmd]
         if reply is None:
             mod.mode_reply = None
+            self._wmbus_on = None
             _LOGGER.warning("Modul %s: keine Antwort auf %s (%s)", module_id, cmd, reason)
         elif "is unknown" in reply:
             self._mark_unsupported(mod, UNSUPPORTED_UNKNOWN, reply)
         elif reply == expected:
             mod.mode_reply = reply
+            self._wmbus_on = True
             _LOGGER.info("Modul %s: Empfangsmodus gesetzt (%s -> %s, %s)", module_id, cmd, reply, reason)
         elif reply == "OFF" and mod.role == ROLE_WMBUS_C:
+            self._wmbus_on = False
             self._mark_unsupported(mod, UNSUPPORTED_NO_CMODE, reply)
         else:
             mod.mode_reply = reply
+            self._wmbus_on = reply in ("SMODE", "TMODE")
             _LOGGER.warning("Modul %s: %s beantwortet mit %r statt %s (%s)", module_id, cmd, reply, expected, reason)
         async_dispatcher_send(self.hass, signal_module_info(self.entry_id))
         return reply
@@ -497,6 +622,10 @@ class MapleCunHub:
     def _unsolicited_mode(self, mod: Module, line: str) -> None:
         """Statuszeile, die nicht auf eine eigene Anfrage folgt (z. B. von einem anderen Client)."""
         mod.mode_reply, mod.mode_time = line, dt_util.utcnow()
+        if line in ("SMODE", "TMODE"):
+            self._wmbus_on = True                 # Status ist global (mbus_mode)
+        elif line == "OFF":
+            self._wmbus_on = False
         async_dispatcher_send(self.hass, signal_module_info(self.entry_id))
         if line != "OFF" or not self.init_mode or mod.unsupported or mod.conflict:
             return
@@ -516,22 +645,51 @@ class MapleCunHub:
             _LOGGER.debug("Modul %s: Empfangsmodus nicht gesetzt: %s", module_id, err)
 
     async def _async_watchdog(self, _now=None) -> None:
-        """wMBus-Modul ohne jede Zeile seit 45 min: Modus einmal neu setzen (max. 1x/h)."""
+        """Modul ohne jede Zeile: einmal neu initialisieren, höchstens einmal pro Stunde.
+
+        wMBus nach 45 min (Zähler senden selten), SlowRF/433 MHz nach 15 min. Läuft über
+        dieselbe Sperre und Reihenfolge wie beim Verbinden (SlowRF: wMBus kurz aus).
+        """
         if not self.init_mode:
             return
         now = time.monotonic()
-        for mod in self.modules.values():
-            if not (mod.is_wmbus and mod.connected) or mod.unsupported or mod.conflict:
+        for mod in list(self.modules.values()):
+            if not mod.connected:
+                continue
+            if mod.role == ROLE_RF433:
+                limit = WATCHDOG_SILENCE_SLOWRF
+            elif mod.is_wmbus and not mod.unsupported and not mod.conflict:
+                limit = WATCHDOG_SILENCE
+            else:
                 continue
             silent = now - mod.last_line
-            if silent < WATCHDOG_SILENCE or now - mod.watchdog_at < WATCHDOG_REPEAT:
+            if silent < limit or now - mod.watchdog_at < WATCHDOG_REPEAT:
                 continue
             mod.watchdog_at = now
             _LOGGER.warning(
-                "Modul %s: seit %d min keine Zeile empfangen – Empfangsmodus wird neu gesetzt",
-                mod.module_id, silent // 60,
+                "Modul %s: seit %d min keine Zeile empfangen – %s wird neu initialisiert",
+                mod.module_id, silent // 60, "SlowRF" if mod.role == ROLE_RF433 else "Empfangsmodus",
             )
             await self._async_set_mode_safe(mod.module_id, "Wächter")
+
+    async def async_send_it(self, module_id: str, command: str) -> None:
+        """Intertechno senden ("is…").
+
+        a-culfw stellt danach den SlowRF-Empfang über set_txrestore wieder her
+        (intertechno.c, restore_RF_mode) – das passiert bei aktivem wMBus nicht: der Chip
+        bleibt in der Intertechno-Konfiguration, der GDO-Interrupt aus. Deshalb anschließend
+        wie beim Verbinden neu initialisieren (wMBus kurz aus).
+        """
+        await self.async_send(module_id, command)
+        if not self.init_mode or self._active_owner() is None or self._wmbus_on is False:
+            return
+        if (old := self._it_reinit.get(module_id)) is not None and not old.done():
+            old.cancel()                       # mehrere Sendebefehle kurz hintereinander: einmal danach
+        self._it_reinit[module_id] = self.hass.async_create_task(self._async_reinit_after_it(module_id))
+
+    async def _async_reinit_after_it(self, module_id: str) -> None:
+        await asyncio.sleep(IT_REINIT_DELAY)
+        await self._async_set_mode_safe(module_id, "nach Intertechno-Senden")
 
     async def async_send(self, module_id: str, command: str) -> None:
         mod = self.modules.get(module_id)
@@ -651,16 +809,10 @@ class MapleCunHub:
     async def _async_reload_radio(self, mod: Module) -> None:
         """Neue EEPROM-Werte laden: X21 (set_txreport -> set_txrestore -> ccInitChip).
 
-        a-culfw überspringt das, solange irgendein Modul im wMBus-Modus ist
-        (rf_receive.c set_txrestore: globale Variable mbus_mode) – dann wirken die Werte erst
-        nach einem Neustart des MapleCUN.
+        a-culfw überspringt das, solange irgendein Modul im wMBus-Modus ist – deshalb wie
+        beim Verbinden: wMBus kurz aus, X21, wMBus wieder ein.
         """
-        await self.async_send(mod.module_id, "X21")
-        if any(m.is_wmbus and m.connected and not m.unsupported and not m.conflict for m in self.modules.values()):
-            _LOGGER.warning(
-                "Modul %s: Werte gespeichert; a-culfw lädt sie erst nach einem Neustart des MapleCUN, "
-                "weil ein anderes Modul im Wireless-M-Bus-Modus ist", mod.module_id,
-            )
+        await self.async_init_slowrf([mod.module_id], "neue Funkeinstellungen")
         await self.async_refresh_info(mod.module_id)
 
     async def async_set_patable(self, module_id: str, idx: str) -> None:

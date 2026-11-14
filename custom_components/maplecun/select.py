@@ -7,7 +7,7 @@ sens, patable und led werden von a-culfw im EEPROM gespeichert. Nur im 433-MHz-B
 
 from __future__ import annotations
 
-from homeassistant.components.select import SelectEntity
+from homeassistant.components.select import SelectEntity, SelectEntityDescription
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -18,6 +18,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import MapleCunConfigEntry, culcmd
 from .const import DOMAIN, ROLE_RF433, signal_connection, signal_module_info
+from .naming import with_fallback_name
 
 
 async def async_setup_entry(
@@ -51,6 +52,7 @@ class _Base(SelectEntity):
         self._attr_translation_key = f"set_{key}"
         self._attr_translation_placeholders = {"module": module_id}
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
+        with_fallback_name(self, "select", SelectEntityDescription)
 
     @property
     def available(self) -> bool:

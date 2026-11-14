@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity
+from homeassistant.components.binary_sensor import (
+    BinarySensorDeviceClass,
+    BinarySensorEntity,
+    BinarySensorEntityDescription,
+)
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -11,6 +15,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MapleCunConfigEntry
 from .const import CONF_SENSORS, DOMAIN, ROLE_RF433, signal_climate, signal_connection
+from .naming import with_fallback_name
 
 
 async def async_setup_entry(
@@ -47,6 +52,7 @@ class ModuleConnection(BinarySensorEntity):
         self._attr_translation_placeholders = {"module": module_id}
         self._attr_extra_state_attributes = {"port": mod.port, "role": mod.role}
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
+        with_fallback_name(self, "binary_sensor", BinarySensorEntityDescription)
 
     @property
     def is_on(self) -> bool:
