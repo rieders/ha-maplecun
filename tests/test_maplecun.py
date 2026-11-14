@@ -14,6 +14,8 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.maplecun.const import DOMAIN
 from custom_components.maplecun import wmbus
 
+from .culfw_sim import Firmware
+
 REVOLT = "r3a65E6006432" "08FC" "64" "04D2"   # 230V 1.00A 50Hz 230.0W pf1.00 12.34kWh
 # echtes Telegramm Warmwasser 52144701 (+ LQI 80, RSSI 07 wie von a-culfw angehängt)
 WARM = "b2D446532014714521A06B78D7AE40000000C13297102004C13429900370400426C3F3C02BB560000326CFFFF046D30A30D08443A43758007"
@@ -25,18 +27,26 @@ REPEATED = "b4BC465B276908000F13178A7A0831100AB327001394465320639145209761A077AC
 
 
 class FakeModule:
-    def __init__(self):
+    """Ein Port des Split-Proxys; antwortet wie a-culfw (culfw_sim)."""
+
+    def __init__(self, firmware: Firmware | None = None, inst: int = 0):
         self.received: list[str] = []
         self.clients: list[asyncio.StreamWriter] = []
+        self.firmware = firmware
+        self.inst = inst
 
-    async def start(self):
-        self.server = await asyncio.start_server(self._client, "127.0.0.1", 0)
+    async def start(self, port: int = 0):
+        self.server = await asyncio.start_server(self._client, "127.0.0.1", port)
         self.port = self.server.sockets[0].getsockname()[1]
 
     async def _client(self, reader, writer):
         self.clients.append(writer)
         while line := await reader.readline():
-            self.received.append(line.decode().strip())
+            cmd = line.decode().strip()
+            self.received.append(cmd)
+            if self.firmware is not None:
+                for reply in self.firmware.handle(self.inst, cmd):
+                    await self.send(reply)
 
     async def send(self, line: str):
         for w in list(self.clients):
@@ -49,15 +59,25 @@ class FakeModule:
             except ConnectionError:
                 self.clients.remove(w)
 
-    async def stop(self):
+    async def drop(self):
+        """Verbindungen trennen (Server läuft weiter) – simuliert einen Reconnect."""
         for w in self.clients:
             w.close()
+        self.clients.clear()
+
+    async def stop(self):
+        await self.drop()
         self.server.close()
 
 
 @pytest.fixture
-async def mods(socket_enabled):
-    m = {k: FakeModule() for k in "1234"}
+def firmware():
+    return Firmware()
+
+
+@pytest.fixture
+async def mods(socket_enabled, firmware):
+    m = {k: FakeModule(firmware, i) for i, k in enumerate("1234")}
     for x in m.values():
         await x.start()
     yield m
@@ -71,7 +91,7 @@ async def _settle(hass, t=0.3):
         await hass.async_block_till_done()
 
 
-def _modules(mods, roles=("wmbus_c", "rf433", "off", "monitor")):
+def _modules(mods, roles=("wmbus_t", "rf433", "off", "monitor")):
     return {k: {"port": mods[k].port, "role": r} for k, r in zip("1234", roles)}
 
 
@@ -119,17 +139,20 @@ async def test_config_flow(hass: HomeAssistant, mods):
     data = {"host": "127.0.0.1", "it_codes": "ffff0f0fff"}
     for k in "1234":
         data[f"port_{k}"] = mods[k].port
-    data.update(role_1="wmbus_c", role_2="rf433", role_3="off", role_4="monitor")
+    data.update(role_1="wmbus_t", role_2="rf433", role_3="off", role_4="monitor")
     bad = {**data, "port_4": 1}
     r = await hass.config_entries.flow.async_configure(r["flow_id"], bad)
     assert r["errors"] == {"port_4": "cannot_connect"}
+    # a-culfw: nur ein Modul gleichzeitig im wMBus-Modus
+    r = await hass.config_entries.flow.async_configure(r["flow_id"], {**data, "role_3": "wmbus_s"})
+    assert r["errors"] == {"base": "wmbus_exclusive"}
     r = await hass.config_entries.flow.async_configure(r["flow_id"], data)
     assert r["type"] is FlowResultType.CREATE_ENTRY
     assert r["data"]["modules"]["2"]["role"] == "rf433"
     assert "FFFF0F0FFF" in r["options"]["it_devices"]
     await _settle(hass, 0.6)
-    assert mods["1"].received[:2] == ["X21", "brc"]
-    assert mods["2"].received[:1] == ["X21"]
+    assert mods["1"].received[:4] == ["V", "?", "X21", "brt"]
+    assert mods["2"].received[:3] == ["V", "?", "X21"]
     assert mods["4"].received == []           # monitor: nichts senden
     entry = hass.config_entries.async_entries(DOMAIN)[0]
     await hass.config_entries.async_unload(entry.entry_id)
@@ -314,23 +337,164 @@ async def test_encrypted_meter_key_via_options(hass: HomeAssistant, mods, caplog
     await hass.config_entries.async_unload(entry.entry_id)
 
 
-async def test_wmbus_mode_off_retry(hass: HomeAssistant, mods):
-    """a-culfw schaltet bei "brc" um: Antwort OFF -> einmal erneut setzen, nicht endlos."""
+async def _setup(hass, mods, roles=("wmbus_t", "rf433", "off", "monitor"), init=True):
     entry = MockConfigEntry(domain=DOMAIN, version=2, title="MapleCUN test", unique_id="127.0.0.1",
-        data={"host": "127.0.0.1", "modules": _modules(mods)},
-        options={"init_mode": True, "meters": {}, "revolts": {}, "it_devices": {}})
+        data={"host": "127.0.0.1", "modules": _modules(mods, roles)},
+        options={"init_mode": init, "meters": {}, "revolts": {}, "it_devices": {}})
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await _settle(hass, 0.6)
-    assert mods["1"].received == ["X21", "brc"]
+    return entry
+
+
+async def test_wmbus_mode_acknowledged(hass: HomeAssistant, mods, firmware):
+    """brt -> TMODE: Antwort ausgewertet, im Diagnose-Sensor sichtbar."""
+    entry = await _setup(hass, mods)
+    assert mods["1"].received == ["V", "?", "X21", "brt"]
+    assert firmware.mode[0] == "wmbus_t"
+    st = hass.states.get("sensor.maplecun_test_receive_mode_module_1")
+    assert st.state == "TMODE"
+    assert st.attributes["befehl"] == "brt" and st.attributes["firmware"].startswith("V 1.26.08 a-culfw")
+    assert "b" in st.attributes["kommandos"]
+    assert hass.states.get("sensor.maplecun_test_receive_mode_module_2") is None   # nur wMBus-Module
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_wmbus_mode_idempotent_after_reconnect(hass: HomeAssistant, mods, firmware, monkeypatch):
+    """Nach jedem Verbinden wird der Modus neu gesetzt – egal, was vorher war."""
+    from custom_components.maplecun import hub as hub_mod
+    monkeypatch.setattr(hub_mod, "RECONNECT_DELAY", 0.1)
+    entry = await _setup(hass, mods)
+    firmware.mode[0] = "off"                         # z. B. Neustart des MapleCUN / anderer Client
+    await mods["1"].drop()
+    await _settle(hass, 1.0)
+    assert mods["1"].received.count("brt") == 2
+    assert firmware.mode[0] == "wmbus_t"
+    # brt bei schon aktivem T-Modus: bleibt an (kein Umschalten)
+    assert await entry.runtime_data.async_set_mode("1", "Test") == "TMODE"
+    assert firmware.mode[0] == "wmbus_t"
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_wmbus_c_not_supported_by_a_culfw(hass: HomeAssistant, mods, firmware, caplog):
+    """a-culfw hat keinen C-Modus: "brc" wird gar nicht erst gesendet (es würde über die
+    globale Variable mbus_mode auch den Empfang anderer Module beenden)."""
+    entry = await _setup(hass, mods, roles=("wmbus_c", "rf433", "off", "monitor"))
+    assert mods["1"].received == ["V", "?"]
+    hub = entry.runtime_data
+    assert hub.modules["1"].unsupported == "no_cmode"
+    assert "keinen C-Modus" in caplog.text
+    assert hass.states.get("sensor.maplecun_test_receive_mode_module_1").state == "nicht unterstützt"
+    # unaufgefordertes OFF (z. B. Statusabfrage eines anderen Clients): nichts senden
     await mods["1"].send("OFF")
     await _settle(hass)
-    assert mods["1"].received == ["X21", "brc", "X21", "brc"]
-    await mods["1"].send("OFF")                    # kurz darauf erneut: nur Warnung
+    assert "brc" not in mods["1"].received
+    # Hinweis im Options-Flow
+    r = await hass.config_entries.options.async_init(entry.entry_id)
+    r = await hass.config_entries.options.async_configure(r["flow_id"], {"next_step_id": "modules"})
+    assert "Modul 1: Rolle wmbus_c nicht unterstützt" in r["description_placeholders"]["hints"]
+    # auch nach dem Neuladen nicht erneut senden (gespeichert)
+    await hass.config_entries.async_reload(entry.entry_id)
+    await _settle(hass, 0.6)
+    assert "brc" not in mods["1"].received
+    assert entry.runtime_data.modules["1"].unsupported == "no_cmode"
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_wmbus_c_off_reply_other_firmware(hass: HomeAssistant, mods, firmware):
+    """Andere Firmware (nicht a-culfw), die auf "brc" mit OFF antwortet: einmal senden, dann markieren."""
+    import custom_components.maplecun.hub  # noqa: F401
+    orig = firmware.handle
+    firmware.handle = lambda inst, cmd: (
+        ["V 1.67 CUL868"] if cmd == "V" else orig(inst, cmd))
+    entry = await _setup(hass, mods, roles=("wmbus_c", "rf433", "off", "monitor"))
+    assert mods["1"].received == ["V", "?", "X21", "brc"]
+    assert entry.runtime_data.modules["1"].unsupported == "no_cmode"
+    await mods["1"].send("OFF")
+    await _settle(hass)
+    assert mods["1"].received.count("brc") == 1
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_wmbus_role_without_b_command(hass: HomeAssistant, mods, firmware):
+    """Modul 4 (fntab3) kennt kein "b": Rolle nicht unterstützt, nichts senden außer V und ?."""
+    entry = await _setup(hass, mods, roles=("off", "rf433", "off", "wmbus_s"))
+    assert mods["4"].received == ["V", "?"]
+    assert entry.runtime_data.modules["4"].unsupported == "no_b"
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_wmbus_is_unknown_reply(hass: HomeAssistant, mods, firmware):
+    """Antwort "? (brs is unknown) …" -> nicht unterstützt."""
+    firmware.cmds[0] = "b C V X"                     # meldet b, kennt brs aber nicht
+    orig = firmware.handle
+    firmware.handle = lambda inst, cmd: (
+        ["? (brs is unknown) Use one of C V X"] if cmd == "brs" else orig(inst, cmd))
+    entry = await _setup(hass, mods, roles=("wmbus_s", "rf433", "off", "off"))
+    assert entry.runtime_data.modules["1"].unsupported == "unknown"
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_wmbus_only_one_module(hass: HomeAssistant, mods, firmware):
+    """Zwei wMBus-Rollen (Altkonfiguration): nur das erste Modul wird gesetzt."""
+    entry = await _setup(hass, mods, roles=("wmbus_t", "rf433", "wmbus_s", "off"))
+    assert "brt" in mods["1"].received and "brs" not in mods["3"].received
+    assert firmware.mode == {0: "wmbus_t", 1: "slow", 2: "off", 3: "off"}
+    assert hass.states.get("sensor.maplecun_test_receive_mode_module_3").state == "belegt durch Modul 1"
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_wmbus_c_unsupported_frees_s_module(hass: HomeAssistant, mods, firmware):
+    """Echte Ausgangslage: Modul 1 "C", Modul 3 "S". brc -> OFF, danach bekommt Modul 3 den Empfang."""
+    entry = await _setup(hass, mods, roles=("wmbus_c", "rf433", "wmbus_s", "off"))
+    await _settle(hass, 0.4)
+    assert mods["3"].received == ["V", "?", "X21", "brs"]
+    assert "brc" not in mods["1"].received
+    assert firmware.receiving() == {2: "wmbus_s"}         # S-Empfang läuft wirklich
+    assert hass.states.get("sensor.maplecun_test_receive_mode_module_3").state == "SMODE"
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_wmbus_unsolicited_off(hass: HomeAssistant, mods, firmware):
+    """Unaufgefordertes OFF -> einmal neu setzen; erneut innerhalb von 5 min -> nicht."""
+    entry = await _setup(hass, mods)
+    await mods["1"].send("OFF")
+    await _settle(hass)
+    assert mods["1"].received.count("brt") == 2
+    await mods["1"].send("OFF")
     await mods["2"].send("OFF")                    # 433-MHz-Modul: unverändert
     await _settle(hass)
-    assert mods["1"].received == ["X21", "brc", "X21", "brc"]
-    assert mods["2"].received == ["X21"]
+    assert mods["1"].received.count("brt") == 2
+    assert mods["2"].received == ["V", "?", "X21"]
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_wmbus_watchdog(hass: HomeAssistant, mods, firmware, caplog):
+    """45 min ohne Zeile -> Modus einmal neu setzen, höchstens einmal pro Stunde."""
+    import time
+    entry = await _setup(hass, mods)
+    hub = entry.runtime_data
+    firmware.mode[0] = "off"
+    hub.modules["1"].last_line = time.monotonic() - 46 * 60
+    await hub._async_watchdog()
+    await _settle(hass)
+    assert mods["1"].received.count("brt") == 2 and firmware.mode[0] == "wmbus_t"
+    assert "seit 46 min keine Zeile" in caplog.text
+    hub.modules["1"].last_line = time.monotonic() - 50 * 60
+    await hub._async_watchdog()
+    await _settle(hass)
+    assert mods["1"].received.count("brt") == 2      # innerhalb einer Stunde nicht erneut
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_init_mode_off_sends_only_reads(hass: HomeAssistant, mods, firmware):
+    """Ohne "Empfangsmodus setzen": nur V und ?, auch der Wächter sendet nichts."""
+    import time
+    entry = await _setup(hass, mods, init=False)
+    assert mods["1"].received == ["V", "?"]
+    entry.runtime_data.modules["1"].last_line = time.monotonic() - 46 * 60
+    await entry.runtime_data._async_watchdog()
+    assert mods["1"].received == ["V", "?"]
     await hass.config_entries.async_unload(entry.entry_id)
 
 

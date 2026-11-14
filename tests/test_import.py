@@ -26,7 +26,7 @@ from pytest_homeassistant_custom_component.components.recorder.common import asy
 from custom_components.maplecun.const import DOMAIN
 
 from .fhem_sim import REAL, hca, log_line, water
-from .test_maplecun import REPEATED, _modules, _settle, mods  # noqa: F401
+from .test_maplecun import REPEATED, _modules, _settle, firmware, mods  # noqa: F401
 
 EID = "sensor.wasser_52143909_meter_reading"
 FILE_ID = "0f8fad5b-d9cb-469f-a165-70867728950e"

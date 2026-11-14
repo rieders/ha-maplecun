@@ -38,6 +38,7 @@ from homeassistant.util import dt as dt_util
 
 from . import MapleCunConfigEntry
 from .const import (
+    CONFLICT_WMBUS,
     CONF_METERS,
     CONF_MODEL,
     CONF_NAME,
@@ -53,6 +54,7 @@ from .const import (
     signal_connection,
     signal_meter,
     signal_meter_new,
+    signal_module_info,
     signal_raw,
     signal_rx,
     signal_revolt,
@@ -231,8 +233,8 @@ async def async_setup_entry(
     stale = {f"{entry.entry_id}_last_raw"} | {
         f"{entry.entry_id}_{kind}_{mid}"
         for mid in MODULE_IDS if mid not in hub.modules
-        for kind in ("last_raw", "last_rx", "rx_today", "module")
-    }
+        for kind in ("last_raw", "last_rx", "rx_today", "module", "mode")
+    } | {f"{entry.entry_id}_mode_{mid}" for mid, mod in hub.modules.items() if not mod.is_wmbus}
     for ent in er.async_entries_for_config_entry(ent_reg, entry.entry_id):
         if ent.unique_id in stale:
             ent_reg.async_remove(ent.entity_id)
@@ -252,6 +254,8 @@ async def async_setup_entry(
     for mid in sorted(hub.modules):
         entities.append(LastRxSensor(entry, mid))
         entities.append(RxCountSensor(entry, mid))
+        if hub.modules[mid].is_wmbus:
+            entities.append(ModeSensor(entry, mid))
 
     # --- Temperatur-/Feuchtesensoren 433 MHz
     if rf_module:
@@ -641,3 +645,56 @@ class RxCountSensor(LastRxSensor):
     def native_value(self):
         mod = self._hub.modules.get(self._mid)
         return mod.rx_count if mod else None
+
+
+class ModeSensor(_Base):
+    """Diagnose: letzte Antwort der Firmware auf den Empfangsmodus-Befehl eines wMBus-Moduls.
+
+    Zustand: "SMODE"/"TMODE"/"CMODE"/"OFF", "nicht unterstützt", "belegt durch Modul N"
+    oder leer (noch keine Antwort).
+    """
+
+    _attr_translation_key = "mode_status"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, entry, module_id: str) -> None:
+        super().__init__(entry, module_id)
+        self._attr_unique_id = f"{entry.entry_id}_mode_{module_id}"
+        self._attr_translation_placeholders = {"module": module_id}
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
+
+    @property
+    def available(self) -> bool:
+        return True                  # zeigt auch den Zustand eines getrennten Moduls
+
+    @property
+    def native_value(self) -> str | None:
+        mod = self._hub.modules.get(self._mid)
+        if mod is None:
+            return None
+        if mod.unsupported:
+            return "nicht unterstützt"
+        if mod.conflict:
+            return f"belegt durch Modul {mod.conflict}"
+        return mod.mode_reply[:RAW_STATE_MAX] if mod.mode_reply else None
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        mod = self._hub.modules.get(self._mid)
+        if mod is None:
+            return {}
+        return {
+            "rolle": mod.role,
+            "befehl": mod.mode_cmd,
+            "antwort": mod.mode_reply,
+            "zeit": mod.mode_time.isoformat() if mod.mode_time else None,
+            "grund": mod.unsupported or (CONFLICT_WMBUS if mod.conflict else None),
+            "firmware": mod.version,
+            "kommandos": mod.cmds,
+        }
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_dispatcher_connect(self.hass, signal_module_info(self._entry.entry_id), self.async_write_ha_state)
+        )

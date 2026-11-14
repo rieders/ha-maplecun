@@ -166,3 +166,30 @@ def test_encrypted_without_key_only_flagged():
     enc[14] = 0x05                                 # Config: Modus 5
     t = wmbus.decode(bytes(enc))
     assert t.encrypted and not t.records and t.meter_id == "60299917"
+
+
+# ------------------------------------------------------------------ Zeile direkt vom Gerät
+# Am 2026-11-14 mit a-culfw 1.26.08 (Build 323) im T-Modus (X21, brt) direkt am Split-Proxy
+# mitgeschnitten. Fremder Zähler, deshalb anonymisiert: A-Feld (ID) durch 12345678 ersetzt,
+# Block-CRCs neu berechnet; alles andere – auch die angehängten Bytes 80 2A – unverändert.
+DEVICE_T_LINE = (
+    "b32446850785634126980A999A0919F330000E0160000A407B30700009D9A0000000000000000000000"
+    "0000000000FFFF000000000000000000FFFF802A"
+)
+
+
+def test_device_line_lqi_rssi_order():
+    """a-culfw clib/rf_mbus.c hängt DH2(lqi); DH2(rssi) an. Gerät: 80 2A.
+
+    LQI-Byte des CC1101 (Bit 7 CRC_OK) = 0x80, RSSI 0x2A = 42/2 - 74 = -53 dBm.
+    Umgekehrt gelesen wäre RSSI 0x80 = -138 dBm – unplausibel.
+    """
+    raw = bytes.fromhex(DEVICE_T_LINE[1:])
+    assert len(raw) == 0x32 + 1 + 4 * 2 + 2       # L-Feld + 4 Block-CRCs + LQI + RSSI
+    frame, rssi = wmbus.parse_cul_line(DEVICE_T_LINE)
+    assert rssi == -53.0
+    assert wmbus.cul_status(raw[-2:]) == (0x80, -53.0)
+    head = wmbus.decode(frame, header_only=True)
+    assert (head.manufacturer, head.meter_id) == ("TCH", "12345678")
+    with pytest.raises(wmbus.WMBusError):         # Block-CRC wird geprüft
+        wmbus.parse_cul_line(_flip(DEVICE_T_LINE, 30))

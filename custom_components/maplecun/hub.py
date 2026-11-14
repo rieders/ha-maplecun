@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 
 from homeassistant.components import persistent_notification
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
@@ -37,14 +40,28 @@ from .const import (
     KIND_METER,
     KIND_REVOLT,
     KIND_SENSOR,
+    CONFLICT_WMBUS,
+    MODE_REPLY,
+    MODE_REPLY_RE,
     MODE_RETRY_DELAY,
     RECONNECT_DELAY,
+    REPLY_TIMEOUT,
     ROLE_INIT,
+    ROLE_MODE_CMD,
+    ROLE_MONITOR,
+    ROLE_NEEDS,
     ROLE_OFF,
     HEARD_MAX,
     ROLE_RF433,
+    ROLE_WMBUS_C,
     SEEN_MAX,
     STORAGE_VERSION,
+    UNSUPPORTED_NO_B,
+    UNSUPPORTED_NO_CMODE,
+    UNSUPPORTED_UNKNOWN,
+    WATCHDOG_CHECK,
+    WATCHDOG_REPEAT,
+    WATCHDOG_SILENCE,
     WMBUS_ROLES,
     signal_climate,
     signal_connection,
@@ -52,6 +69,7 @@ from .const import (
     signal_it,
     signal_meter,
     signal_meter_new,
+    signal_module_info,
     signal_raw,
     signal_rx,
     signal_revolt,
@@ -59,6 +77,15 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def parse_cmds(reply: str) -> str:
+    """Antwort auf "?" -> Kommandobuchstaben.
+
+    a-culfw (clib/multi_CC.c, callfn2): "? (? is unknown) Use one of B b C F … *".
+    """
+    tail = reply.split("Use one of", 1)[-1]
+    return "".join(tok for tok in tail.split() if len(tok) == 1)
 
 
 @dataclass
@@ -74,9 +101,28 @@ class Module:
     rx_day: int = 0
     rx_notified: float = 0.0
     mode_retry: float = -1e9          # letztes erneutes Setzen nach "OFF" (monotonic)
+    last_line: float = 0.0            # monotonic der letzten Zeile (oder des Verbindens)
+    watchdog_at: float = -1e9         # letztes Neusetzen durch den Wächter (monotonic)
+    # Firmware
+    version: str | None = None        # Antwort auf "V"
+    cmds: str | None = None           # Antwort auf "?", nur die Buchstaben, z. B. "bCFiAZ…"
+    mode_reply: str | None = None     # letzte Antwort auf den Empfangsmodus-Befehl
+    mode_cmd: str | None = None
+    mode_time: object = None
+    unsupported: str | None = None    # UNSUPPORTED_* – Rolle wird nicht (mehr) gesetzt
+    conflict: str | None = None       # Modul-ID, die den wMBus-Empfang belegt
+    skipped: bool = False             # Modus wegen Konflikt nicht gesetzt -> nachholen, wenn frei
+    info: dict = field(default_factory=dict)        # Modulwerte (Aufgabe 3)
+    info_at: dict = field(default_factory=dict)     # Abrufzeitpunkte (monotonic)
+    waiters: list = field(default_factory=list)     # (Regex, Future) für Antworten
     writer: asyncio.StreamWriter | None = None
     task: asyncio.Task | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    req_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    @property
+    def is_wmbus(self) -> bool:
+        return self.role in WMBUS_ROLES
 
 
 class MapleCunHub:
@@ -119,6 +165,8 @@ class MapleCunHub:
         self._last_energy: dict[str, tuple[float, float]] = {}
         self._adopting: set[str] = set()
         self._notified = 0
+        self._modes: dict[str, dict] = {}
+        self._unsub_watchdog = None
 
     # ------------------------------------------------------------------ Lebenszyklus
     async def async_start(self) -> None:
@@ -132,13 +180,30 @@ class MapleCunHub:
             k: v for k, v in data.get("discovered", {}).items()
             if k not in self.ignored and not self.is_configured(k) and not k.startswith(f"{KIND_METER}:")
         }
+        # Firmware-Befunde: "Rolle nicht unterstützt" gilt nur für dieselbe Rolle und Firmware
+        self._modes = {k: dict(v) for k, v in data.get("modes", {}).items()}
+        for mid, mod in self.modules.items():
+            saved = self._modes.get(mid, {})
+            if saved.get("role") == mod.role:
+                mod.version = saved.get("version")
+                mod.cmds = saved.get("cmds")
+                mod.unsupported = saved.get("unsupported")
+            else:
+                self._modes.pop(mid, None)
+        self._update_conflicts()
         for mod in self.modules.values():
             mod.task = self.hass.async_create_background_task(
                 self._run(mod), f"{DOMAIN}_{self.entry_id}_module_{mod.module_id}"
             )
+        self._unsub_watchdog = async_track_time_interval(
+            self.hass, self._async_watchdog, timedelta(seconds=WATCHDOG_CHECK)
+        )
         self._update_notification()
 
     async def async_stop(self) -> None:
+        if self._unsub_watchdog:
+            self._unsub_watchdog()
+            self._unsub_watchdog = None
         for mod in self.modules.values():
             if mod.task:
                 mod.task.cancel()
@@ -156,6 +221,7 @@ class MapleCunHub:
             "seen": self.seen,
             "discovered": self.discovered,
             "ignored": sorted(self.ignored),
+            "modes": self._modes,
         }
 
     def _save_later(self, delay: float = 10) -> None:
@@ -189,21 +255,31 @@ class MapleCunHub:
                 )
                 mod.writer = writer
                 mod.connected = True
+                mod.last_line = time.monotonic()
                 async_dispatcher_send(self.hass, signal_connection(self.entry_id))
                 _LOGGER.info("Modul %s verbunden (%s:%s, %s)", mod.module_id, self.host, mod.port, mod.role)
-                if self.init_mode:
-                    await self._async_init_module(mod)
-                while True:
-                    raw = await reader.readline()
-                    if not raw:
-                        raise ConnectionError("Verbindung vom Gegenüber geschlossen")
-                    line = raw.decode(errors="replace").strip()
-                    if line:
-                        self._note_rx(mod)
-                        try:
-                            self._handle_line(mod, line)
-                        except Exception:  # noqa: BLE001
-                            _LOGGER.exception("Fehler beim Verarbeiten von %r", line)
+                # Kennung abfragen und Empfangsmodus setzen, während unten schon gelesen wird
+                # (die Antworten der Firmware kommen über dieselbe Verbindung)
+                init = self.hass.async_create_background_task(
+                    self._async_on_connect(mod), f"{DOMAIN}_{self.entry_id}_init_{mod.module_id}"
+                )
+                try:
+                    while True:
+                        raw = await reader.readline()
+                        if not raw:
+                            raise ConnectionError("Verbindung vom Gegenüber geschlossen")
+                        line = raw.decode(errors="replace").strip()
+                        if line:
+                            # Antworten auf eigene Anfragen zählen nicht als Empfang
+                            if self._resolve_waiter(mod, line):
+                                continue
+                            self._note_rx(mod)
+                            try:
+                                self._handle_line(mod, line)
+                            except Exception:  # noqa: BLE001
+                                _LOGGER.exception("Fehler beim Verarbeiten von %r", line)
+                finally:
+                    init.cancel()
             except asyncio.CancelledError:
                 raise
             except (OSError, ConnectionError, asyncio.TimeoutError) as err:
@@ -212,6 +288,13 @@ class MapleCunHub:
             await self._close(mod)
             await asyncio.sleep(RECONNECT_DELAY)
 
+    async def async_reopen(self, module_id: str) -> None:
+        """Verbindung schließen; _run baut sie neu auf und initialisiert das Modul neu."""
+        mod = self.modules.get(module_id)
+        if mod and mod.writer:
+            _LOGGER.info("Modul %s: Verbindung wird neu aufgebaut", module_id)
+            mod.writer.close()
+
     @callback
     def _note_rx(self, mod: Module) -> None:
         """Empfangsstatistik je Modul; Entitäten höchstens einmal pro Minute aktualisieren."""
@@ -219,37 +302,225 @@ class MapleCunHub:
         if now.toordinal() != mod.rx_day:
             mod.rx_day, mod.rx_count = now.toordinal(), 0
         mod.rx_count += 1
+        mod.last_line = time.monotonic()
         first = mod.last_rx is None
         mod.last_rx = now
         if first or time.monotonic() - mod.rx_notified > 60:
             mod.rx_notified = time.monotonic()
             async_dispatcher_send(self.hass, signal_rx(self.entry_id))
 
-    async def _async_init_module(self, mod: Module) -> None:
-        for cmd in ROLE_INIT.get(mod.role, ()):
-            await self.async_send(mod.module_id, cmd)
+    # ------------------------------------------------------------------ Firmware-Antworten
+    @callback
+    def _resolve_waiter(self, mod: Module, line: str) -> bool:
+        """Zeile als Antwort auf eine laufende Anfrage verbuchen (dann nicht weiter auswerten)."""
+        for item in list(mod.waiters):
+            pattern, fut = item
+            if not fut.done() and pattern.search(line):
+                fut.set_result(line)
+                mod.waiters.remove(item)
+                return True
+        return False
+
+    async def async_request(
+        self, module_id: str, command: str, pattern: str, timeout: float = REPLY_TIMEOUT
+    ) -> str | None:
+        """Befehl senden und auf die erste passende Antwortzeile warten (None = keine Antwort).
+
+        Je Modul läuft höchstens eine Anfrage gleichzeitig, damit Antworten eindeutig bleiben.
+        Andere Zeilen (Telegramme) werden währenddessen normal ausgewertet.
+        """
+        mod = self.modules.get(module_id)
+        if mod is None:
+            raise ConnectionError(f"Modul {module_id} ist nicht eingerichtet")
+        async with mod.req_lock:
+            item = (re.compile(pattern), self.hass.loop.create_future())
+            mod.waiters.append(item)
+            try:
+                await self.async_send(module_id, command)
+                return await asyncio.wait_for(item[1], timeout)
+            except asyncio.TimeoutError:
+                return None
+            finally:
+                if item in mod.waiters:
+                    mod.waiters.remove(item)
+
+    async def _async_on_connect(self, mod: Module) -> None:
+        if mod.role == ROLE_MONITOR:
+            return                     # "Nur überwachen": von sich aus nichts senden
+        try:
+            await self._async_identify(mod)
+            if self.init_mode:
+                await self.async_set_mode(mod.module_id, "Verbinden")
+        except (OSError, ConnectionError) as err:
+            _LOGGER.debug("Modul %s: Initialisierung abgebrochen: %s", mod.module_id, err)
+
+    async def _async_identify(self, mod: Module) -> None:
+        """Version ("V") und Kommandoliste ("?") lesen – nur lesend, auch ohne init_mode."""
+        ver = await self.async_request(mod.module_id, "V", r"^V ")
+        if ver:
+            if mod.version and ver != mod.version and mod.unsupported:
+                _LOGGER.info("Modul %s: neue Firmware (%s), Rolle wird erneut geprüft", mod.module_id, ver)
+                mod.unsupported = None
+            mod.version = ver
+        reply = await self.async_request(mod.module_id, "?", r"Use one of")
+        if reply:
+            mod.cmds = parse_cmds(reply)
+            _LOGGER.debug("Modul %s: Kommandos %s", mod.module_id, mod.cmds)
+            needs = ROLE_NEEDS.get(mod.role, "")
+            if mod.is_wmbus and "b" in needs and "b" not in mod.cmds:
+                self._mark_unsupported(mod, UNSUPPORTED_NO_B, reply)
+        self._persist_mode(mod)
+        async_dispatcher_send(self.hass, signal_module_info(self.entry_id))
 
     @callback
-    def _mode_switched_off(self, mod: Module) -> None:
-        """a-culfw schaltet bei "brc" usw. um: war der Modus schon aktiv, ist er jetzt aus.
+    def _persist_mode(self, mod: Module) -> None:
+        self._modes[mod.module_id] = {
+            "role": mod.role, "version": mod.version, "cmds": mod.cmds, "unsupported": mod.unsupported,
+        }
+        self._save_later(5)
 
-        Einmal erneut setzen; kommt kurz darauf wieder OFF, nur warnen (keine Schleife).
+    @callback
+    def _mark_unsupported(self, mod: Module, reason: str, reply: str | None) -> None:
+        if mod.unsupported == reason:
+            return
+        mod.unsupported = reason
+        mod.mode_reply = reply
+        text = {
+            UNSUPPORTED_NO_B: "die Firmware meldet für dieses Modul kein wMBus-Kommando \"b\"",
+            UNSUPPORTED_UNKNOWN: "die Firmware kennt den Befehl nicht",
+            UNSUPPORTED_NO_CMODE: "die Firmware hat keinen C-Modus (a-culfw kennt nur brs/brt, "
+            "\"brc\" schaltet den Empfang aus)",
+        }.get(reason, reason)
+        _LOGGER.error(
+            "Modul %s: Rolle %s wird nicht unterstützt – %s (%s). Der Befehl wird nicht "
+            "gesendet; bitte unter Konfigurieren → Funkmodule eine andere Rolle wählen.",
+            mod.module_id, mod.role, text,
+            f"Antwort: {reply!r}" if reply is not None else f"Firmware: {mod.version}",
+        )
+        self._persist_mode(mod)
+        self._update_conflicts()
+        # Ein bisher blockiertes Modul darf jetzt den wMBus-Empfang übernehmen
+        for other in self.modules.values():
+            if other.skipped and not other.conflict and other.connected and self.init_mode:
+                other.skipped = False
+                self.hass.async_create_task(self._async_set_mode_safe(other.module_id, "Modul frei"))
+
+    def wmbus_owner(self) -> str | None:
+        """Das eine Modul, das in den wMBus-Modus gesetzt wird.
+
+        a-culfw (clib/rf_mode.c, set_RF_mode) schaltet beim Setzen von S oder T auf einem
+        CC1101 jedes andere Modul im wMBus-Modus aus – MBpacket/RXinfo gibt es nur einmal.
+        Gleichzeitiger Empfang auf zwei Modulen ist damit nicht möglich: das erste Modul
+        (kleinste Nummer) mit unterstützter wMBus-Rolle bekommt den Empfang.
         """
-        if not self.init_mode:
+        return next(
+            (mid for mid in sorted(self.modules)
+             if self.modules[mid].is_wmbus and not self.modules[mid].unsupported),
+            None,
+        )
+
+    @callback
+    def _update_conflicts(self) -> None:
+        owner = self.wmbus_owner()
+        for mod in self.modules.values():
+            mod.conflict = owner if (mod.is_wmbus and not mod.unsupported and owner != mod.module_id) else None
+
+    async def async_set_mode(self, module_id: str, reason: str) -> str | None:
+        """Empfangsmodus der Rolle setzen und die Antwort der Firmware auswerten.
+
+        Idempotent: "X21" und "brs"/"brt" initialisieren den CC1101 jedes Mal neu, egal in
+        welchem Zustand er vorher war. Liefert die Antwort (bzw. None).
+        """
+        mod = self.modules.get(module_id)
+        if mod is None or not mod.connected:
+            return None
+        if mod.role == ROLE_RF433:
+            for cmd in ROLE_INIT[ROLE_RF433]:
+                await self.async_send(module_id, cmd)
+            return None
+        if not mod.is_wmbus:
+            return None
+        if mod.unsupported:
+            _LOGGER.debug("Modul %s: Rolle %s nicht unterstützt (%s), nichts gesendet",
+                          module_id, mod.role, mod.unsupported)
+            return None
+        if mod.role == ROLE_WMBUS_C and mod.version and "a-culfw" in mod.version:
+            # Nicht ausprobieren: "brc" landet in a-culfw in set_RF_mode(RF_mode_off), und der
+            # setzt die globale Variable mbus_mode = WMBUS_NONE (clib/rf_mode.c) – das beendet
+            # auch den Empfang eines anderen Moduls im S- oder T-Modus.
+            self._mark_unsupported(mod, UNSUPPORTED_NO_CMODE, None)
+            async_dispatcher_send(self.hass, signal_module_info(self.entry_id))
+            return None
+        self._update_conflicts()
+        if mod.conflict:
+            mod.skipped = True
+            _LOGGER.warning(
+                "Modul %s: Empfangsmodus %s nicht gesetzt – die Firmware erlaubt nur ein Modul im "
+                "wMBus-Modus, Modul %s ist dafür eingerichtet", module_id, mod.role, mod.conflict,
+            )
+            async_dispatcher_send(self.hass, signal_module_info(self.entry_id))
+            return None
+        mod.skipped = False
+        cmd = ROLE_MODE_CMD[mod.role]
+        await self.async_send(module_id, "X21")           # RSSI/LQI anhängen (schaltet auf SlowRF)
+        reply = await self.async_request(module_id, cmd, MODE_REPLY_RE)
+        mod.mode_cmd, mod.mode_time = cmd, dt_util.utcnow()
+        expected = MODE_REPLY[cmd]
+        if reply is None:
+            mod.mode_reply = None
+            _LOGGER.warning("Modul %s: keine Antwort auf %s (%s)", module_id, cmd, reason)
+        elif "is unknown" in reply:
+            self._mark_unsupported(mod, UNSUPPORTED_UNKNOWN, reply)
+        elif reply == expected:
+            mod.mode_reply = reply
+            _LOGGER.info("Modul %s: Empfangsmodus gesetzt (%s -> %s, %s)", module_id, cmd, reply, reason)
+        elif reply == "OFF" and mod.role == ROLE_WMBUS_C:
+            self._mark_unsupported(mod, UNSUPPORTED_NO_CMODE, reply)
+        else:
+            mod.mode_reply = reply
+            _LOGGER.warning("Modul %s: %s beantwortet mit %r statt %s (%s)", module_id, cmd, reply, expected, reason)
+        async_dispatcher_send(self.hass, signal_module_info(self.entry_id))
+        return reply
+
+    @callback
+    def _unsolicited_mode(self, mod: Module, line: str) -> None:
+        """Statuszeile, die nicht auf eine eigene Anfrage folgt (z. B. von einem anderen Client)."""
+        mod.mode_reply, mod.mode_time = line, dt_util.utcnow()
+        async_dispatcher_send(self.hass, signal_module_info(self.entry_id))
+        if line != "OFF" or not self.init_mode or mod.unsupported or mod.conflict:
             return
         now = time.monotonic()
         if now - mod.mode_retry < MODE_RETRY_DELAY:
-            _LOGGER.warning("Modul %s meldet wiederholt OFF – Empfangsmodus bitte prüfen", mod.module_id)
+            _LOGGER.debug("Modul %s meldet erneut OFF – nächster Versuch frühestens in %d s",
+                          mod.module_id, MODE_RETRY_DELAY - (now - mod.mode_retry))
             return
         mod.mode_retry = now
-        _LOGGER.info("Modul %s meldet OFF, setze Empfangsmodus erneut", mod.module_id)
-        self.hass.async_create_task(self._async_retry_mode(mod))
+        _LOGGER.warning("Modul %s meldet OFF, setze Empfangsmodus erneut", mod.module_id)
+        self.hass.async_create_task(self._async_set_mode_safe(mod.module_id, "OFF gemeldet"))
 
-    async def _async_retry_mode(self, mod: Module) -> None:
+    async def _async_set_mode_safe(self, module_id: str, reason: str) -> None:
         try:
-            await self._async_init_module(mod)
+            await self.async_set_mode(module_id, reason)
         except (OSError, ConnectionError) as err:
-            _LOGGER.debug("Modul %s: Empfangsmodus nicht gesetzt: %s", mod.module_id, err)
+            _LOGGER.debug("Modul %s: Empfangsmodus nicht gesetzt: %s", module_id, err)
+
+    async def _async_watchdog(self, _now=None) -> None:
+        """wMBus-Modul ohne jede Zeile seit 45 min: Modus einmal neu setzen (max. 1x/h)."""
+        if not self.init_mode:
+            return
+        now = time.monotonic()
+        for mod in self.modules.values():
+            if not (mod.is_wmbus and mod.connected) or mod.unsupported or mod.conflict:
+                continue
+            silent = now - mod.last_line
+            if silent < WATCHDOG_SILENCE or now - mod.watchdog_at < WATCHDOG_REPEAT:
+                continue
+            mod.watchdog_at = now
+            _LOGGER.warning(
+                "Modul %s: seit %d min keine Zeile empfangen – Empfangsmodus wird neu gesetzt",
+                mod.module_id, silent // 60,
+            )
+            await self._async_set_mode_safe(mod.module_id, "Wächter")
 
     async def async_send(self, module_id: str, command: str) -> None:
         mod = self.modules.get(module_id)
@@ -398,10 +669,11 @@ class MapleCunHub:
             if (reading := climate433.decode(line)) is not None:
                 self._handle_climate(reading)
                 return
-        if line == "OFF" and mod.role in WMBUS_ROLES:
-            self._mode_switched_off(mod)
+        if line in ("OFF", "CMODE", "TMODE", "SMODE"):
+            if mod.role in WMBUS_ROLES:
+                self._unsolicited_mode(mod, line)
             return
-        if line in ("OFF", "CMODE", "TMODE", "SMODE") or line.startswith("V "):
+        if line.startswith("V "):
             return
         async_dispatcher_send(self.hass, signal_raw(self.entry_id, mod.module_id), line)
 

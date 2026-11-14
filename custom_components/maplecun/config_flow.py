@@ -48,6 +48,10 @@ from .const import (
     MODULE_IDS,
     ROLE_OFF,
     ROLES,
+    UNSUPPORTED_NO_B,
+    UNSUPPORTED_NO_CMODE,
+    UNSUPPORTED_UNKNOWN,
+    WMBUS_ROLES,
 )
 
 _CODE_RE = re.compile(r"^[0F1D]{10}$")
@@ -99,11 +103,44 @@ def _modules_from_input(user_input: dict) -> dict:
     }
 
 
+_UNSUPPORTED_TEXT = {
+    UNSUPPORTED_NO_B: "die Firmware meldet für dieses Modul kein wMBus-Kommando „b“",
+    UNSUPPORTED_UNKNOWN: "die Firmware kennt den Befehl nicht („is unknown“)",
+    UNSUPPORTED_NO_CMODE: "die Firmware hat keinen C-Modus – „brc“ schaltet a-culfw aus; "
+    "T-Modus (brt) wählen oder culfw verwenden",
+}
+
+
+def module_hints(hub) -> str:
+    """Hinweise zu Modulen, deren Rolle die Firmware nicht unterstützt oder die blockiert sind."""
+    if hub is None:
+        return ""
+    lines = []
+    for mid in sorted(hub.modules):
+        mod = hub.modules[mid]
+        if mod.unsupported:
+            lines.append(
+                f"⚠️ **Modul {mid}: Rolle {mod.role} nicht unterstützt** – "
+                f"{_UNSUPPORTED_TEXT.get(mod.unsupported, mod.unsupported)}. Der Befehl wird nicht mehr gesendet."
+            )
+        elif mod.conflict:
+            lines.append(
+                f"⚠️ **Modul {mid}: nicht initialisiert** – nur ein Modul kann gleichzeitig "
+                f"Wireless M-Bus empfangen, Modul {mod.conflict} ist dafür eingerichtet."
+            )
+        if mod.cmds:
+            lines.append(f"Modul {mid}: Firmware-Kommandos {' '.join(mod.cmds)}")
+    return "\n\n".join(lines)
+
+
 async def _check_modules(host: str, modules: dict) -> dict[str, str]:
     errors: dict[str, str] = {}
     active = {mid: cfg for mid, cfg in modules.items() if cfg[CONF_ROLE] != ROLE_OFF}
     if not active:
         errors["base"] = "no_module"
+        return errors
+    if sum(cfg[CONF_ROLE] in WMBUS_ROLES for cfg in active.values()) > 1:
+        errors["base"] = "wmbus_exclusive"
         return errors
     results = await asyncio.gather(*(_probe(host, cfg["port"]) for cfg in active.values()))
     for mid, ok in zip(active, results):
@@ -264,7 +301,8 @@ class MapleCunOptionsFlow(OptionsFlow):
             }
         )
         return self.async_show_form(
-            step_id="modules", data_schema=schema, errors=errors, description_placeholders={"host": host}
+            step_id="modules", data_schema=schema, errors=errors,
+            description_placeholders={"host": host, "hints": module_hints(self._hub())},
         )
 
     # ------------------------------------------------------------------ Zähler

@@ -12,7 +12,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.maplecun.const import DOMAIN
 from custom_components.maplecun.sensor import RawSensor, SeenMetersSensor
 
-from .test_maplecun import RELAYED_HCA, REPEATED, WARM, _modules, _settle, mods  # noqa: F401
+from .test_maplecun import RELAYED_HCA, REPEATED, WARM, _modules, _settle, firmware, mods  # noqa: F401
 
 
 def _entry(mods, roles=("wmbus_c", "rf433", "off", "monitor"), meters=None):

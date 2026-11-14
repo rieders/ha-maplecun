@@ -14,11 +14,11 @@
           "role_3": "Modul 3: Aufgabe",
           "port_4": "Modul 4: Port",
           "role_4": "Modul 4: Aufgabe",
-          "init_mode": "Empfangsmodus beim Verbinden setzen (X21, brc/brt/brs)",
+          "init_mode": "Empfangsmodus beim Verbinden setzen (X21, brs/brt)",
           "it_codes": "Intertechno-Codes (optional, kommagetrennt)"
         },
         "data_description": {
-          "init_mode": "Empfohlen. Setzt jedes Modul auf seine Aufgabe (z. B. brc für Wireless M-Bus C). Stört FHEM nicht, solange die Aufgaben dort gleich eingestellt sind.",
+          "init_mode": "Empfohlen. Setzt jedes Modul in den Modus seiner Rolle und prüft die Antwort der Firmware. Wireless M-Bus C braucht culfw; a-culfw 1.26 kennt nur S und T. Es kann immer nur ein Modul im Wireless-M-Bus-Modus sein.",
           "it_codes": "10-stellige Tristate-Codes wie in FHEM, z. B. FFFF0F0FFF. Ein = FF, Aus = F0."
         }
       }
@@ -26,7 +26,8 @@
     "error": {
       "cannot_connect": "Port nicht erreichbar.",
       "no_module": "Mindestens ein Modul aktivieren.",
-      "invalid_code": "Ungültiger Code: genau 10 Zeichen aus 0, 1, F, D."
+      "invalid_code": "Ungültiger Code: genau 10 Zeichen aus 0, 1, F, D.",
+      "wmbus_exclusive": "Nur ein Modul kann gleichzeitig Wireless M-Bus empfangen: a-culfw schaltet beim Setzen eines wMBus-Modus die anderen ab (clib/rf_mode.c)."
     },
     "abort": {
       "already_configured": "Dieser MapleCUN ist bereits eingerichtet."
@@ -52,7 +53,7 @@
       },
       "modules": {
         "title": "Funkmodule",
-        "description": "Host: {host}",
+        "description": "Host: {host}\n\n{hints}",
         "data": {
           "port_1": "Modul 1: Port",
           "role_1": "Modul 1: Aufgabe",
@@ -62,10 +63,10 @@
           "role_3": "Modul 3: Aufgabe",
           "port_4": "Modul 4: Port",
           "role_4": "Modul 4: Aufgabe",
-          "init_mode": "Empfangsmodus beim Verbinden setzen (X21, brc/brt/brs)"
+          "init_mode": "Empfangsmodus beim Verbinden setzen (X21, brs/brt)"
         },
         "data_description": {
-          "init_mode": "Empfohlen. Setzt jedes Modul auf seine Aufgabe (z. B. brc für Wireless M-Bus C). Stört FHEM nicht, solange die Aufgaben dort gleich eingestellt sind."
+          "init_mode": "Empfohlen. Setzt jedes Modul in den Modus seiner Rolle und prüft die Antwort der Firmware. Wireless M-Bus C braucht culfw; a-culfw 1.26 kennt nur S und T. Es kann immer nur ein Modul im Wireless-M-Bus-Modus sein."
         }
       },
       "add_meter": {
@@ -177,7 +178,8 @@
       "invalid_key": "AES-Schlüssel: 32 Hex-Zeichen.",
       "cannot_connect": "Port nicht erreichbar.",
       "no_module": "Mindestens ein Modul aktivieren.",
-      "file_error": "Die Datei konnte nicht gelesen werden."
+      "file_error": "Die Datei konnte nicht gelesen werden.",
+      "wmbus_exclusive": "Nur ein Modul kann gleichzeitig Wireless M-Bus empfangen: a-culfw schaltet beim Setzen eines wMBus-Modus die anderen ab (clib/rf_mode.c)."
     },
     "abort": {
       "nothing_found": "Keine neuen Geräte gefunden.",
@@ -188,7 +190,7 @@
   "selector": {
     "role": {
       "options": {
-        "wmbus_c": "Wireless M-Bus C (868,95 MHz)",
+        "wmbus_c": "Wireless M-Bus C (868,95 MHz, nur culfw)",
         "wmbus_t": "Wireless M-Bus T (868,95 MHz)",
         "wmbus_s": "Wireless M-Bus S (868,3 MHz)",
         "rf433": "433 MHz (Revolt, Intertechno)",
@@ -299,6 +301,9 @@
       },
       "meter_last_received": {
         "name": "Zuletzt empfangen"
+      },
+      "mode_status": {
+        "name": "Empfangsmodus Modul {module}"
       }
     }
   },

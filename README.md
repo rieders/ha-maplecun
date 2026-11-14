@@ -4,11 +4,11 @@ Custom Integration, die alle Funkmodule eines **[MapleCUN](https://wiki.fhem.de/
 
 | Aufgabe eines Moduls | Geräte in Home Assistant |
 |---|---|
-| **Wireless M-Bus C / T / S** | Wasser-, Wärme-, Gaszähler, Heizkostenverteiler (OMS): Zählerstand, Stichtags- und Monatsendwert, Signalstärke, zuletzt empfangen … – auch über Netzwerkknoten/Repeater empfangene und AES-verschlüsselte Zähler (Modus 5) |
+| **Wireless M-Bus T / S** (C nur mit culfw) | Wasser-, Wärme-, Gaszähler, Heizkostenverteiler (OMS): Zählerstand, Stichtags- und Monatsendwert, Signalstärke, zuletzt empfangen … – auch über Netzwerkknoten/Repeater empfangene und AES-verschlüsselte Zähler (Modus 5) |
 | **433 MHz** | Revolt NC-5462 Energiemesser, Intertechno-Steckdosen (Tristate), Thermometer (Mebus, GT-WT-02, KW9010, NX7674) |
 | **Nur überwachen** | z. B. ein HomeMatic-/MAX!-Modul, das weiter von FHEM bedient wird – nur Verbindungsstatus |
 
-Jedes Modul bekommt Diagnose-Sensoren für Verbindung, **letzten Empfang** und **Telegramme heute** sowie einen (standardmäßig deaktivierten) Sensor **„Rohdaten Modul N“**; dazu die Zählerübersicht **„Empfangene Zähler“** (siehe unten).
+Jedes Modul bekommt Diagnose-Sensoren für Verbindung, **letzten Empfang** und **Telegramme heute**, Wireless-M-Bus-Module zusätzlich **„Empfangsmodus Modul N“** (letzte Antwort der Firmware), sowie einen (standardmäßig deaktivierten) Sensor **„Rohdaten Modul N“**; dazu die Zählerübersicht **„Empfangene Zähler“** (siehe unten).
 
 ## Voraussetzung: maplecun-splitproxy
 
@@ -43,8 +43,8 @@ Ordner `custom_components/maplecun` nach `/config/custom_components/` kopieren, 
 **Einstellungen → Geräte & Dienste → Integration hinzufügen → MapleCUN**
 
 * **Host** – IP des Rechners mit dem Split-Proxy
-* **Modul 1–4** – Port und Aufgabe (Wireless M-Bus C/T/S, 433 MHz, Nur überwachen, Aus)
-* **Empfangsmodus setzen** – schickt beim Verbinden `X21` bzw. `brc`/`brt`/`brs`
+* **Modul 1–4** – Port und Aufgabe (Wireless M-Bus T/S/C, 433 MHz, Nur überwachen, Aus)
+* **Empfangsmodus setzen** – schickt beim Verbinden `X21` und dann `brt`/`brs` (bzw. `brc`) und prüft die Antwort der Firmware (siehe [Empfangsmodus](#empfangsmodus-wireless-m-bus))
 * **Intertechno-Codes** – optional, z. B. `FFFF00FFFF, FFFF0F0FFF`
 
 ### Geräte finden und übernehmen
@@ -65,7 +65,7 @@ Wireless-M-Bus-Zähler werden **nicht** gesammelt: Von Zählern, deren ID nicht 
 Zähler-IDs unter **Konfigurieren → Wireless-M-Bus-Zähler hinzufügen** eintragen. Die ID steht auf dem Gerät bzw. in FHEM im Namen: `WMBUS_LSE_52143909_26_7` → `52143909`.
 Beim Hinzufügen schlägt eine Auswahlliste die seit dem Start gehörten, noch nicht angelegten IDs vor (ID, Typ, RSSI, stärkstes Signal zuerst – der eigene Zähler ist meist der nächste); freie Eingabe bleibt möglich.
 Alternativ lässt sich unter **Konfigurieren → Einstellungen** vorübergehend **„Unbekannte Zähler ins Log schreiben“** einschalten (nur ID, Typ, RSSI; Vorgabe aus).
-Welches Modul Wireless M-Bus empfängt und in welchem Modus (S, T, C), steht unter **Konfigurieren → Funkmodule**; der Modus wird beim Verbinden per `brs`/`brt`/`brc` gesetzt.
+Welches Modul Wireless M-Bus empfängt und in welchem Modus (T, S), steht unter **Konfigurieren → Funkmodule**; der Modus wird bei jedem Verbinden per `brt`/`brs` gesetzt. **Es kann immer nur ein Modul Wireless M-Bus empfangen** (siehe unten).
 
 Viele Zähler senden nur ein- bis wenige Male am Tag – Geduld. Die Sensoren entstehen beim ersten Telegramm nach dem Eintragen und behalten ihren Wert über Neustarts:
 
@@ -75,6 +75,26 @@ Viele Zähler senden nur ein- bis wenige Male am Tag – Geduld. Die Sensoren en
 
 Name und AES-Schlüssel (verschlüsselte Zähler) unter **Konfigurieren → Zähler bearbeiten**; verschlüsselte Telegramme ohne Schlüssel werden nur geloggt.
 Ältere Zählerstände aus FHEM lassen sich [nachträglich importieren](#alte-zählerstände-aus-fhem-übernehmen).
+
+### Empfangsmodus (Wireless M-Bus)
+
+Was die Firmware mit den Befehlen macht (a-culfw `clib/rf_mbus.c`, `rf_mbus_func`; `clib/rf_mode.c`, `set_RF_mode`):
+
+| Befehl | a-culfw 1.26.08 (MapleCUN) | culfw | Antwort |
+|---|---|---|---|
+| `brs` | S-Modus (868,3 MHz) | S-Modus | `SMODE` |
+| `brt` | T-Modus (868,95 MHz) | T-Modus | `TMODE` |
+| `brc` | **kein C-Modus – fällt in den Aus-Zweig und beendet den wMBus-Empfang auf allen Modulen** | C-Modus | a-culfw: `OFF`, culfw: `CMODE` |
+| `brx` | aus (ebenfalls für alle Module) | aus | `OFF` |
+| `br` / `b` | nur Status abfragen – **gilt für das ganze Gerät**, nicht für das gefragte Modul | nur Status | `SMODE`/`TMODE`/`OFF` |
+| `X21` | RSSI/LQI anhängen **und auf SlowRF schalten** (beendet wMBus) | – | keine |
+
+* Die Befehle schalten **nicht** um: `brs`/`brt` initialisieren den CC1101 jedes Mal neu. Erneutes Senden ist unschädlich, die Integration setzt den Modus deshalb bei jedem Verbinden, Reconnect und Neuladen.
+* `X21` muss **vor** dem Moduswechsel kommen (wie in FHEM 00_CUL.pm, `initString "X21\nbrs"`).
+* **Nur ein Modul gleichzeitig:** a-culfw schaltet beim Setzen von S oder T jedes andere Modul im wMBus-Modus ab (gemeinsamer Empfangspuffer). Modus und Empfangszustand sind globale Variablen (`mbus_mode`, `radio_mode`): ein Aus-Befehl (`brc`, `brx`) auf **irgendeinem** Modul setzt `mbus_mode = WMBUS_NONE` und beendet damit auch den Empfang des Moduls, das gerade S oder T hört. Die Integration sendet `brc` deshalb an a-culfw gar nicht erst. Die Integration lässt deshalb nur eine wMBus-Rolle zu; in einer älteren Konfiguration mit zwei wMBus-Modulen bekommt das erste den Empfang, das zweite zeigt „belegt durch Modul N“.
+* Antwortet die Firmware mit `OFF` auf `brc`, mit `? (… is unknown)` oder fehlt `b` in der Kommandoliste (Antwort auf `?`, z. B. beim vierten Modul des MapleCUN), wird die Rolle als **nicht unterstützt** markiert, der Befehl nicht erneut gesendet und unter **Konfigurieren → Funkmodule** ein Hinweis angezeigt. Der Befund gilt bis zu einem Rollen- oder Firmwarewechsel.
+* **Wächter:** Kommt von einem wMBus-Modul 45 Minuten lang keine einzige Zeile, wird der Modus einmal neu gesetzt (höchstens einmal pro Stunde, mit Log-Eintrag). Ein unaufgefordertes `OFF` (z. B. nach einem Befehl eines anderen Programms am Proxy) führt höchstens alle 5 Minuten zu einem erneuten Setzen.
+* Der Diagnose-Sensor **„Empfangsmodus Modul N“** zeigt die letzte Antwort (`TMODE`, `SMODE`, `OFF`, „nicht unterstützt“, „belegt durch Modul N“), dazu Befehl, Zeitpunkt, Firmware-Version und Kommandoliste als Attribute.
 
 ### Alte Zählerstände aus FHEM übernehmen
 
@@ -229,7 +249,7 @@ Codes aus FHEM: `list TYPE=IT DEF` → z. B. `FFFF0F0FFF FF F0` = Code, Ein, Aus
 * Nicht unterstützt: fragmentierte AFL-Telegramme, SML-Nutzdaten (CI 7E/7F), Kamstrup-Compact-Frames (CI 79), herstellerspezifische CI-Felder
 * Über Netzwerkknoten weitergeleitete Telegramme (C=C4, CI=A0, Hersteller `LSE` + Bit 15): das innere Zählertelegramm ab Offset 18 wird bis zum Ende des äußeren Telegramms ausgewertet (das innere L-Feld ist unzuverlässig). An diesem Rahmen scheitern FHEM (`Unsupported CI Field a0`) und vermutlich auch wmbusmeters
 * Der Decoder (`wmbus.py`) hat keine Home-Assistant-Abhängigkeiten: `tests/test_wmbus.py` und `tests/test_wmbus_port.py` laufen mit reinem `pytest` (+ `cryptography` für AES)
-* a-culfw schaltet bei `brc`/`brt`/`brs` um: meldet ein Wireless-M-Bus-Modul `OFF`, wird der Modus einmal erneut gesetzt
+* Empfangsmodus, Firmware-Antworten und Wächter: siehe [Empfangsmodus](#empfangsmodus-wireless-m-bus)
 * Revolt-Dekodierung nach dem Aufbau von FHEM `19_Revolt.pm`, inkl. Plausibilitätsprüfung
 * Verbindung je Modul per TCP (asyncio), automatischer Reconnect
 * Intertechno-Empfang (`i…`, Tristate) nach dem Aufbau von FHEM `10_IT.pm`
@@ -237,7 +257,7 @@ Codes aus FHEM: `list TYPE=IT DEF` → z. B. `FFFF0F0FFF FF F0` = Code, Ein, Aus
 
 ## Alternative: wmbusmeters
 
-Die eingebaute Dekodierung ist der Standard. Wer lieber [wmbusmeters](https://github.com/wmbusmeters/wmbusmeters) nutzt: a-culfw antwortet auf `brc` mit `OFF`, wodurch wmbusmeters abbricht. [`extras/wmbusmeters`](extras/wmbusmeters) enthält eine Brücke, die das löst.
+Die eingebaute Dekodierung ist der Standard. Wer lieber [wmbusmeters](https://github.com/wmbusmeters/wmbusmeters) nutzt: a-culfw kennt keinen C-Modus und antwortet auf `brc` mit `OFF` (der Empfang ist dann aus), wodurch wmbusmeters abbricht. Mit a-culfw in wmbusmeters den T- oder S-Modus verwenden; [`extras/wmbusmeters`](extras/wmbusmeters) enthält eine Brücke (sie beantwortet die Moduswahl selbst – C-Telegramme kann a-culfw trotzdem nicht empfangen).
 
 ## Tests
 
