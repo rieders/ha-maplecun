@@ -19,6 +19,7 @@ daher ist auch dieses Projekt auf Version 2 festgelegt.
 | `custom_components/maplecun/climate433.py` | Protokolle aus FHEM `FHEM/14_CUL_TCM97001.pm` |
 | `custom_components/maplecun/intertechno.py` | Aufbau nach FHEM `FHEM/10_IT.pm` |
 | `custom_components/maplecun/revolt.py` | Aufbau nach FHEM `FHEM/19_Revolt.pm` |
+| `custom_components/maplecun/culcmd.py`, Teile von `hub.py` | Kommandos und Umrechnungen der Modul-Abfragen und -Einstellungen (`get ccconf/cmds/credit10ms/uptime/version/raw`, `set freq/bWidth/rAmpl/sens/patable/led/ITClock/raw/reopen`, `@ampllist`) aus FHEM `FHEM/00_CUL.pm` (Autor: rudolfkoenig), `$Id: 00_CUL.pm 24815 2021-08-01`. Geprüft gegen a-culfw (<https://github.com/heliflieger/a-culfw>, GPL-2.0): `clib/cc1100.c`, `clib/fncollection.c`, `clib/rf_receive.c`, `clib/rf_mbus.c`, `clib/rf_mode.c`, `clib/intertechno.c`, `clib/multi_CC.c`; aus a-culfw wurde kein Code übernommen. |
 
 FHEM: <https://fhem.de>, Lizenz GPL v2.
 

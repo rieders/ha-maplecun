@@ -27,6 +27,7 @@ from homeassistant.const import (
     PERCENTAGE,
     UnitOfPower,
     UnitOfTemperature,
+    UnitOfTime,
     UnitOfVolume,
     UnitOfVolumeFlowRate,
 )
@@ -308,6 +309,11 @@ async def async_setup_entry(
         entities.append(RxCountSensor(entry, mid))
         if hub.modules[mid].is_wmbus:
             entities.append(ModeSensor(entry, mid))
+        cmds = hub.modules[mid].cmds
+        for desc in MODULE_INFO:
+            if desc.key == "uptime" and cmds and "t" not in cmds:
+                continue          # "t" gibt es nur auf Modul 1 (Laufzeit gilt für das ganze Gerät)
+            entities.append(ModuleInfoSensor(entry, mid, desc))
 
     # --- Temperatur-/Feuchtesensoren 433 MHz
     if rf_module:
@@ -364,7 +370,8 @@ def _expected_sensor_ids(entry, hub, wmbus: bool) -> set[str]:
         ids |= {f"{e}_last_raw_{mid}", f"{e}_last_rx_{mid}", f"{e}_rx_today_{mid}"}
         if mod.is_wmbus:
             ids.add(f"{e}_mode_{mid}")
-        ids |= {f"{e}_{k}_{mid}" for k in MODULE_INFO_KEYS}
+        ids |= {f"{e}_{k}_{mid}" for k in MODULE_INFO_KEYS
+                if not (k == "info_uptime" and mod.cmds and "t" not in mod.cmds)}
     if hub.module_for_role(ROLE_RF433):
         ids |= {f"{e}_revolt_{rid}_{d.key}" for rid in hub.revolts for d in REVOLT_SENSORS}
         for key, cfg in entry.options.get(CONF_SENSORS, {}).items():
@@ -378,8 +385,30 @@ def _expected_sensor_ids(entry, hub, wmbus: bool) -> set[str]:
     return ids
 
 
-# Diagnose-Sensoren je Modul aus Aufgabe 3 (hier nur für die Bereinigung bekannt)
-MODULE_INFO_KEYS: tuple[str, ...] = ()
+# Diagnose-Sensoren je Modul: Antworten der Firmware (wie FHEM "get")
+MODULE_INFO: tuple[MapleSensorDescription, ...] = (
+    MapleSensorDescription(key="version", translation_key="module_version",
+                           entity_category=EntityCategory.DIAGNOSTIC),
+    MapleSensorDescription(key="cmds", translation_key="module_cmds",
+                           entity_category=EntityCategory.DIAGNOSTIC),
+    MapleSensorDescription(key="uptime", translation_key="module_uptime",
+                           device_class=SensorDeviceClass.DURATION, native_unit_of_measurement=UnitOfTime.SECONDS,
+                           suggested_unit_of_measurement=UnitOfTime.DAYS, suggested_display_precision=2,
+                           entity_category=EntityCategory.DIAGNOSTIC),
+    MapleSensorDescription(key="credit10ms", translation_key="module_credit",
+                           state_class=SensorStateClass.MEASUREMENT, entity_category=EntityCategory.DIAGNOSTIC),
+    MapleSensorDescription(key="freq", translation_key="module_freq", device_class=SensorDeviceClass.FREQUENCY,
+                           native_unit_of_measurement=UnitOfFrequency.MEGAHERTZ, suggested_display_precision=3,
+                           entity_category=EntityCategory.DIAGNOSTIC),
+    MapleSensorDescription(key="bwidth", translation_key="module_bwidth", device_class=SensorDeviceClass.FREQUENCY,
+                           native_unit_of_measurement=UnitOfFrequency.KILOHERTZ, suggested_display_precision=0,
+                           entity_category=EntityCategory.DIAGNOSTIC),
+    MapleSensorDescription(key="rampl", translation_key="module_rampl", native_unit_of_measurement="dB",
+                           entity_category=EntityCategory.DIAGNOSTIC),
+    MapleSensorDescription(key="sens", translation_key="module_sens", native_unit_of_measurement="dB",
+                           entity_category=EntityCategory.DIAGNOSTIC),
+)
+MODULE_INFO_KEYS: tuple[str, ...] = tuple(f"info_{d.key}" for d in MODULE_INFO)
 
 
 # ======================================================================= Entitäten
@@ -868,3 +897,48 @@ class MeterRawSensor(_Base, RestoreEntity):
             "rssi": info.get("rssi"),
             "inneres_telegramm": info.get("inner"),
         }
+
+
+class ModuleInfoSensor(_Base):
+    """Diagnose: ein Wert aus den Firmware-Antworten eines Moduls (Version, ccconf, …)."""
+
+    entity_description: MapleSensorDescription
+
+    def __init__(self, entry, module_id: str, desc: MapleSensorDescription) -> None:
+        super().__init__(entry, module_id)
+        self.entity_description = desc
+        self._attr_unique_id = f"{entry.entry_id}_info_{desc.key}_{module_id}"
+        self._attr_translation_placeholders = {"module": module_id}
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
+        _with_fallback_name(self)
+
+    @property
+    def available(self) -> bool:
+        return self.native_value is not None or super().available
+
+    @property
+    def native_value(self):
+        mod = self._hub.modules.get(self._mid)
+        if mod is None:
+            return None
+        value = mod.info.get(self.entity_description.key)
+        if self.entity_description.key == "version":
+            value = mod.version
+            return value[2:][:RAW_STATE_MAX] if value and value.startswith("V ") else value
+        if self.entity_description.key == "cmds":
+            return " ".join(mod.cmds) if mod.cmds else None
+        return value
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        mod = self._hub.modules.get(self._mid)
+        if mod is None or self.entity_description.key != "freq":
+            return None
+        return {"register": mod.info.get("regs"), "gelesen": (
+            mod.info["updated"].isoformat() if mod.info.get("updated") else None)}
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_dispatcher_connect(self.hass, signal_module_info(self._entry.entry_id), self.async_write_ha_state)
+        )

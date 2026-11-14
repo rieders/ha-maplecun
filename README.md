@@ -8,7 +8,7 @@ Custom Integration, die alle Funkmodule eines **[MapleCUN](https://wiki.fhem.de/
 | **433 MHz** | Revolt NC-5462 Energiemesser, Intertechno-Steckdosen (Tristate), Thermometer (Mebus, GT-WT-02, KW9010, NX7674) |
 | **Nur überwachen** | z. B. ein HomeMatic-/MAX!-Modul, das weiter von FHEM bedient wird – nur Verbindungsstatus |
 
-Jedes Modul bekommt Diagnose-Sensoren für Verbindung, **letzten Empfang** und **Telegramme heute**, Wireless-M-Bus-Module zusätzlich **„Empfangsmodus Modul N“** (letzte Antwort der Firmware), sowie einen (standardmäßig deaktivierten) Sensor **„Rohdaten Modul N“**; dazu die Zählerübersicht **„Empfangene Zähler“** (siehe unten).
+Jedes Modul bekommt Diagnose-Sensoren für Verbindung, **letzten Empfang**, **Telegramme heute** und die [Modulwerte](#modulwerte-und-einstellungen-wie-fhem) (Firmware, Kommandos, Frequenz …), Wireless-M-Bus-Module zusätzlich **„Empfangsmodus Modul N“** (letzte Antwort der Firmware), sowie einen (standardmäßig deaktivierten) Sensor **„Rohdaten Modul N“**; dazu die Zählerübersicht **„Empfangene Zähler“** (siehe unten).
 
 ## Voraussetzung: maplecun-splitproxy
 
@@ -95,6 +95,54 @@ Was die Firmware mit den Befehlen macht (a-culfw `clib/rf_mbus.c`, `rf_mbus_func
 * Antwortet die Firmware mit `OFF` auf `brc`, mit `? (… is unknown)` oder fehlt `b` in der Kommandoliste (Antwort auf `?`, z. B. beim vierten Modul des MapleCUN), wird die Rolle als **nicht unterstützt** markiert, der Befehl nicht erneut gesendet und unter **Konfigurieren → Funkmodule** ein Hinweis angezeigt. Der Befund gilt bis zu einem Rollen- oder Firmwarewechsel.
 * **Wächter:** Kommt von einem wMBus-Modul 45 Minuten lang keine einzige Zeile, wird der Modus einmal neu gesetzt (höchstens einmal pro Stunde, mit Log-Eintrag). Ein unaufgefordertes `OFF` (z. B. nach einem Befehl eines anderen Programms am Proxy) führt höchstens alle 5 Minuten zu einem erneuten Setzen.
 * Der Diagnose-Sensor **„Empfangsmodus Modul N“** zeigt die letzte Antwort (`TMODE`, `SMODE`, `OFF`, „nicht unterstützt“, „belegt durch Modul N“), dazu Befehl, Zeitpunkt, Firmware-Version und Kommandoliste als Attribute.
+
+### Modulwerte und Einstellungen (wie FHEM)
+
+Je Modul gibt es Diagnose-Sensoren mit den Antworten der Firmware (wie FHEM `get`):
+
+| Sensor | Befehl | Umrechnung (FHEM 00_CUL.pm) |
+|---|---|---|
+| Firmware Modul N | `V` | – |
+| Kommandos Modul N | `?` | Buchstaben hinter „Use one of“ |
+| Laufzeit Modul N | `t` (nur Modul 1, gilt für das Gerät) | Hex-Ticks / 125 = Sekunden |
+| Sendeguthaben Modul N | `X` | `credit10ms` |
+| Frequenz / Bandbreite / Verstärkung / Empfindlichkeit Modul N | `C0D` `C0E` `C0F` `C10` `C1B` `C1D` | `ccconf`: 26·FREQ/65536 MHz; 26000/(8·(4+M)·2^E) kHz; `rAmpl`-Liste 24…42 dB; 4+4·(AGCCTRL0&3) dB |
+
+Abgefragt wird beim Verbinden und mit dem Button **„Modulwerte aktualisieren“** – kein Dauer-Polling; Sendeguthaben und Laufzeit höchstens alle 15 Minuten. Bei Modulen in „Nur überwachen“ wird von sich aus nichts gesendet.
+Die Kommandoliste bestimmt auch, welche Rollen **Konfigurieren → Funkmodule** je Modul anbietet (z. B. beim vierten Modul des MapleCUN weder Wireless M-Bus noch 433 MHz).
+
+Einstellungen (wie FHEM `set`), alle **standardmäßig deaktiviert** (Kategorie Konfiguration):
+
+| Entität | Befehl | Werte | Wo |
+|---|---|---|---|
+| Frequenz setzen | `W0F` `W10` `W11` | MHz, Schritt 0,001, im Band der aktuellen Frequenz | 433-MHz-Modul |
+| Bandbreite setzen | `W12` | 58 … 812 kHz (16 Stufen) | 433-MHz-Modul |
+| Verstärkung setzen | `W1D` | 24, 27, 30, 33, 36, 38, 40, 42 dB | 433-MHz-Modul |
+| Empfindlichkeit setzen | `W1F` | 4, 8, 12, 16 dB | 433-MHz-Modul |
+| Sendeleistung (PA-Tabelle) | `x00` … `x09` | −10 … 10 dBm, mit/ohne Rampe | nur Modul 1 im 433-MHz-Betrieb¹ |
+| Intertechno-Takt | `ic<µs>` | 100 … 1000 µs (FHEM-Vorgabe 250) | 433-MHz-Modul |
+| LED | `l00` / `l01` / `l02` | aus / an / blinken | Modul 1 |
+| Modul N neu verbinden (Button) | – | Verbindung neu aufbauen, Modul neu initialisieren | jedes Modul |
+
+* **Frequenz, Bandbreite, Verstärkung, Empfindlichkeit, PA-Tabelle und LED schreibt a-culfw dauerhaft ins EEPROM.** Geschrieben wird nur nach einer Aktion (Oberfläche, Skript, Automation), nie beim Start; Wiederherstellen nach einem Neustart zeigt nur den letzten Wert an.
+* Vor dem ersten Schreiben liest die Integration die aktuelle `ccconf` und schreibt sie ins Log (Stufe WARNING, „Sicherung vor dem Schreiben ins EEPROM“), danach jeden geschriebenen Befehl.
+* Neue Werte lädt die Firmware mit `X21`. a-culfw überspringt das, solange irgendein Modul im Wireless-M-Bus-Modus ist (`set_txrestore`): dann wirken sie erst nach einem Neustart des MapleCUN (Hinweis im Log).
+* Module in einer Wireless-M-Bus-Rolle bekommen diese Entitäten nicht – die Firmware lädt dort eigene Funkeinstellungen.
+* ¹ a-culfw schreibt die PA-Tabelle immer in den EEPROM-Bereich von Modul 1 und lädt dessen Konfiguration in den Chip (`ccsetpa`); an anderen Modulen würde das die Einstellungen verbiegen.
+* `ITClock` bleibt nur im RAM des MapleCUN (bis zu dessen Neustart).
+* `hmPairForSec` und `hmPairSerial` (HomeMatic) gibt es nicht.
+
+**Aktion `maplecun.send_raw`** – beliebiges Kommando an ein Modul (FHEM `set raw`/`get raw`), die erste Antwortzeile kommt als Response zurück und steht zusätzlich im Sensor „Rohdaten Modul N“:
+
+```yaml
+action: maplecun.send_raw
+data:
+  module: "2"
+  command: C0D
+response_variable: antwort      # {"module": "2", "command": "C0D", "response": "C0D = 21 / 33"}
+```
+
+Kommandos, die mit `B` (Bootloader/Neustart) oder `e` (Werkseinstellungen) beginnen, werden nur mit `force: true` gesendet. Vorsicht auch mit `W…` (EEPROM), `brc`/`brx` (beendet den Wireless-M-Bus-Empfang aller Module) und `X…` (schaltet ein Modul auf SlowRF).
 
 ### Alte Zählerstände aus FHEM übernehmen
 
@@ -252,6 +300,7 @@ Codes aus FHEM: `list TYPE=IT DEF` → z. B. `FFFF0F0FFF FF F0` = Code, Ein, Aus
 * Über Netzwerkknoten weitergeleitete Telegramme (C=C4, CI=A0, Hersteller `LSE` + Bit 15): das innere Zählertelegramm ab Offset 18 wird bis zum Ende des äußeren Telegramms ausgewertet (das innere L-Feld ist unzuverlässig). An diesem Rahmen scheitern FHEM (`Unsupported CI Field a0`) und vermutlich auch wmbusmeters
 * Der Decoder (`wmbus.py`) hat keine Home-Assistant-Abhängigkeiten: `tests/test_wmbus.py` und `tests/test_wmbus_port.py` laufen mit reinem `pytest` (+ `cryptography` für AES)
 * Empfangsmodus, Firmware-Antworten und Wächter: siehe [Empfangsmodus](#empfangsmodus-wireless-m-bus)
+* Modulabfragen und -einstellungen: Kommandos und Umrechnungen aus FHEM `00_CUL.pm`, geprüft gegen den a-culfw-Quelltext (`custom_components/maplecun/culcmd.py`, ohne Home-Assistant-Abhängigkeit)
 * Revolt-Dekodierung nach dem Aufbau von FHEM `19_Revolt.pm`, inkl. Plausibilitätsprüfung
 * Verbindung je Modul per TCP (asyncio), automatischer Reconnect
 * Intertechno-Empfang (`i…`, Tristate) nach dem Aufbau von FHEM `10_IT.pm`

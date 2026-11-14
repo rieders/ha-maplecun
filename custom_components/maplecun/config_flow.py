@@ -46,6 +46,7 @@ from .const import (
     KIND_REVOLT,
     KIND_SENSOR,
     MODULE_IDS,
+    ROLE_NEEDS,
     ROLE_OFF,
     ROLES,
     UNSUPPORTED_NO_B,
@@ -87,12 +88,25 @@ def _parse_codes(text: str) -> tuple[dict[str, dict], list[str]]:
     return devices, invalid
 
 
-def _module_schema(modules: dict) -> dict:
+def roles_for(cmds: str | None, current: str | None = None) -> list[str]:
+    """Rollen, die das Modul laut Kommandoliste ("?") kann; unbekannt -> alle.
+
+    Die aktuelle Rolle bleibt wählbar (ein Hinweis zeigt, wenn sie nicht unterstützt wird).
+    """
+    if not cmds:
+        return list(ROLES)
+    return [r for r in ROLES if r == current or all(c in cmds for c in ROLE_NEEDS.get(r, ""))]
+
+
+def _module_schema(modules: dict, hub=None) -> dict:
     fields: dict = {}
     for mid in MODULE_IDS:
         cfg = modules.get(mid, DEFAULT_MODULES[mid])
         fields[vol.Required(f"port_{mid}", default=int(cfg["port"]))] = cv.port
-        fields[vol.Required(f"role_{mid}", default=cfg[CONF_ROLE])] = ROLE_SELECTOR
+        cmds = hub.module_cmds(mid) if hub is not None else None
+        selector = ROLE_SELECTOR if not cmds else SelectSelector(SelectSelectorConfig(
+            options=roles_for(cmds, cfg[CONF_ROLE]), translation_key="role", mode=SelectSelectorMode.DROPDOWN))
+        fields[vol.Required(f"role_{mid}", default=cfg[CONF_ROLE])] = selector
     return fields
 
 
@@ -296,7 +310,7 @@ class MapleCunOptionsFlow(OptionsFlow):
         current = _modules_from_input(user_input) if user_input else self.config_entry.data[CONF_MODULES]
         schema = vol.Schema(
             {
-                **_module_schema(current),
+                **_module_schema(current, self._hub()),
                 vol.Optional(CONF_INIT, default=self.config_entry.options.get(CONF_INIT, True)): bool,
             }
         )

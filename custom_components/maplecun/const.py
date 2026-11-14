@@ -83,6 +83,7 @@ REPLY_TIMEOUT = 3.0         # Wartezeit auf eine Firmware-Antwort (s)
 WATCHDOG_SILENCE = 45 * 60  # wMBus-Modul ohne jede Zeile -> Modus neu setzen …
 WATCHDOG_REPEAT = 60 * 60   # … höchstens einmal pro Stunde
 WATCHDOG_CHECK = 5 * 60     # Prüfintervall
+INFO_SLOW_INTERVAL = 15 * 60  # credit10ms und Laufzeit höchstens alle 15 min lesen
 STORAGE_VERSION = 1
 SEEN_MAX = 200
 HEARD_MAX = 1000          # Zählerübersicht (nur Arbeitsspeicher)

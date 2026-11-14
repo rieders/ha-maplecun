@@ -17,3 +17,32 @@ import_fhem_log:
       selector:
         config_entry:
           integration: maplecun
+send_raw:
+  fields:
+    module:
+      required: true
+      example: "2"
+      selector:
+        select:
+          options: ["1", "2", "3", "4"]
+    command:
+      required: true
+      example: "V"
+      selector:
+        text:
+    force:
+      default: false
+      selector:
+        boolean:
+    timeout:
+      default: 3
+      selector:
+        number:
+          min: 0.5
+          max: 10
+          step: 0.5
+          unit_of_measurement: s
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: maplecun

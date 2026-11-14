@@ -16,7 +16,7 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from . import climate433, intertechno, revolt, wmbus
+from . import climate433, culcmd, intertechno, revolt, wmbus
 from .const import (
     CONF_AUTO,
     CONF_INIT,
@@ -52,6 +52,7 @@ from .const import (
     ROLE_NEEDS,
     ROLE_OFF,
     HEARD_MAX,
+    INFO_SLOW_INTERVAL,
     ROLE_RF433,
     ROLE_WMBUS_C,
     SEEN_MAX,
@@ -187,12 +188,12 @@ class MapleCunHub:
         self._modes = {k: dict(v) for k, v in data.get("modes", {}).items()}
         for mid, mod in self.modules.items():
             saved = self._modes.get(mid, {})
+            mod.version = saved.get("version")
+            mod.cmds = saved.get("cmds")              # Kommandoliste hängt nicht an der Rolle
             if saved.get("role") == mod.role:
-                mod.version = saved.get("version")
-                mod.cmds = saved.get("cmds")
                 mod.unsupported = saved.get("unsupported")
-            else:
-                self._modes.pop(mid, None)
+            elif saved:
+                saved.update(role=mod.role, unsupported=None)
         self._update_conflicts()
         for mod in self.modules.values():
             mod.task = self.hass.async_create_background_task(
@@ -233,6 +234,12 @@ class MapleCunHub:
     # ------------------------------------------------------------------ Verbindung
     def module_for_role(self, role: str) -> Module | None:
         return next((m for m in self.modules.values() if m.role == role), None)
+
+    def module_cmds(self, module_id: str) -> str | None:
+        """Kommandoliste eines Moduls ("?"), auch von gerade abgeschalteten Modulen (gespeichert)."""
+        if (mod := self.modules.get(module_id)) is not None and mod.cmds:
+            return mod.cmds
+        return self._modes.get(module_id, {}).get("cmds")
 
     def is_connected(self, module_id: str | None) -> bool:
         mod = self.modules.get(module_id) if module_id else None
@@ -354,6 +361,7 @@ class MapleCunHub:
             await self._async_identify(mod)
             if self.init_mode:
                 await self.async_set_mode(mod.module_id, "Verbinden")
+            await self.async_refresh_info(mod.module_id)
         except (OSError, ConnectionError) as err:
             _LOGGER.debug("Modul %s: Initialisierung abgebrochen: %s", mod.module_id, err)
 
@@ -533,6 +541,168 @@ class MapleCunHub:
             _LOGGER.debug("Modul %s -> %s", module_id, command)
             mod.writer.write(command.encode() + b"\r\n")
             await mod.writer.drain()
+
+    # ------------------------------------------------------------------ Modulwerte (wie FHEM "get")
+    async def async_refresh_info(self, module_id: str, force: bool = False) -> dict:
+        """Version, Kommandos, ccconf und – höchstens alle 15 min – credit10ms und Laufzeit lesen.
+
+        Nur lesende Befehle (V, ?, Cxx, X, t). Kein Dauer-Polling: Aufruf beim Verbinden und
+        über den Button "Modulwerte aktualisieren".
+        """
+        mod = self.modules.get(module_id)
+        if mod is None or not mod.connected:
+            return {}
+        now = time.monotonic()
+        info = mod.info
+        if force or mod.version is None or mod.cmds is None:
+            await self._async_identify(mod)
+        info["version"], info["cmds"] = mod.version, mod.cmds
+        cmds = mod.cmds or ""
+        if "C" in cmds or not cmds:
+            regs = await self._async_read_regs(module_id)
+            if regs:
+                info["regs"] = {f"{r:02X}": v for r, v in regs.items()}
+                info.update(culcmd.ccconf(regs))
+        due = now - mod.info_at.get("slow", -1e9) >= INFO_SLOW_INTERVAL
+        if due:
+            mod.info_at["slow"] = now
+            if "X" in cmds or not cmds:
+                reply = await self.async_request(module_id, "X", r"^[0-9A-F]{2} +\d*$")
+                if reply and (credit := culcmd.parse_credit(reply)) is not None:
+                    info["credit10ms"] = credit
+            if "t" in cmds:
+                reply = await self.async_request(module_id, "t", r"^[0-9A-F]{8}$")
+                if reply and (secs := culcmd.parse_uptime(reply)) is not None:
+                    info["uptime"] = secs
+        info["updated"] = dt_util.utcnow()
+        async_dispatcher_send(self.hass, signal_module_info(self.entry_id))
+        return info
+
+    async def async_refresh_all(self) -> None:
+        for mid in sorted(self.modules):
+            try:
+                await self.async_refresh_info(mid, force=True)
+            except (OSError, ConnectionError) as err:
+                _LOGGER.debug("Modul %s: Modulwerte nicht gelesen: %s", mid, err)
+
+    async def _async_read_regs(self, module_id: str) -> dict[int, int]:
+        regs: dict[int, int] = {}
+        for reg in culcmd.CCCONF_REGS:
+            reply = await self.async_request(module_id, f"C{reg:02X}", rf"^C{reg:02X} = ")
+            parsed = culcmd.parse_reg(reply) if reply else None
+            if parsed is None:
+                return {}
+            regs[parsed[0]] = parsed[1]
+        return regs
+
+    # ------------------------------------------------------------------ Einstellungen (wie FHEM "set")
+    def can_configure_radio(self, module_id: str) -> bool:
+        """freq/bWidth/rAmpl/sens/ITClock nur im SlowRF-Betrieb (FHEM: rfmode SlowRF).
+
+        In einer wMBus-Rolle lädt die Firmware eigene Funkeinstellungen (rf_mbus_init).
+        """
+        mod = self.modules.get(module_id)
+        return bool(mod and mod.role == ROLE_RF433 and mod.cmds and "W" in mod.cmds)
+
+    async def _async_backup_ccconf(self, module_id: str) -> None:
+        """Vor dem ersten Schreiben die aktuelle Konfiguration lesen und ins Log schreiben."""
+        mod = self.modules[module_id]
+        if mod.info.get("backup"):
+            return
+        regs = await self._async_read_regs(module_id)
+        if not regs:
+            raise ConnectionError(f"Modul {module_id}: ccconf nicht lesbar – nichts geschrieben")
+        conf = culcmd.ccconf(regs)
+        mod.info["backup"] = {"regs": {f"{r:02X}": v for r, v in regs.items()}, **conf}
+        _LOGGER.warning(
+            "Modul %s: Sicherung vor dem Schreiben ins EEPROM – freq %.3f MHz, bWidth %d kHz, "
+            "rAmpl %d dB, sens %d dB, Register %s", module_id, conf["freq"], conf["bwidth"],
+            conf["rampl"], conf["sens"], " ".join(f"C{r:02X}={v:02X}" for r, v in regs.items()),
+        )
+
+    async def async_write_radio(self, module_id: str, setting: str, value) -> object:
+        """freq/bwidth/rampl/sens ins EEPROM schreiben (nur nach Nutzeraktion aufrufen)."""
+        if not self.can_configure_radio(module_id):
+            raise ValueError(f"Modul {module_id}: Funkeinstellungen nur im 433-MHz-Betrieb änderbar")
+        await self._async_backup_ccconf(module_id)
+        mod = self.modules[module_id]
+        if setting == "freq":
+            cmds, actual = culcmd.freq_cmds(float(value))
+        elif setting == "bwidth":
+            regs = await self._async_read_regs(module_id)
+            if not regs:
+                raise ConnectionError(f"Modul {module_id}: MDMCFG4 nicht lesbar")
+            cmd, actual = culcmd.bwidth_cmd(float(value), regs[0x10])
+            cmds = [cmd]
+        elif setting == "rampl":
+            cmd, actual = culcmd.rampl_cmd(int(value))
+            cmds = [cmd]
+        elif setting == "sens":
+            cmd, actual = culcmd.sens_cmd(int(value))
+            cmds = [cmd]
+        else:
+            raise ValueError(setting)
+        for cmd in cmds:
+            await self.async_send(module_id, cmd)
+        _LOGGER.warning("Modul %s: %s = %s ins EEPROM geschrieben (%s)", module_id, setting, actual, " ".join(cmds))
+        await self._async_reload_radio(mod)
+        return actual
+
+    async def _async_reload_radio(self, mod: Module) -> None:
+        """Neue EEPROM-Werte laden: X21 (set_txreport -> set_txrestore -> ccInitChip).
+
+        a-culfw überspringt das, solange irgendein Modul im wMBus-Modus ist
+        (rf_receive.c set_txrestore: globale Variable mbus_mode) – dann wirken die Werte erst
+        nach einem Neustart des MapleCUN.
+        """
+        await self.async_send(mod.module_id, "X21")
+        if any(m.is_wmbus and m.connected and not m.unsupported and not m.conflict for m in self.modules.values()):
+            _LOGGER.warning(
+                "Modul %s: Werte gespeichert; a-culfw lädt sie erst nach einem Neustart des MapleCUN, "
+                "weil ein anderes Modul im Wireless-M-Bus-Modus ist", mod.module_id,
+            )
+        await self.async_refresh_info(mod.module_id)
+
+    async def async_set_patable(self, module_id: str, idx: str) -> None:
+        """PA-Tabelle (Sendeleistung). a-culfw schreibt immer in den EEPROM-Bereich von Modul 1
+        und lädt dessen Konfiguration in den Chip – deshalb nur für Modul 1 im 433-MHz-Betrieb."""
+        if module_id != "1" or not self.can_configure_radio(module_id) or "x" not in (self.modules[module_id].cmds or ""):
+            raise ValueError("patable nur für Modul 1 im 433-MHz-Betrieb")
+        await self._async_backup_ccconf(module_id)
+        await self.async_send(module_id, culcmd.patable_cmd(idx))
+        _LOGGER.warning("Modul %s: patable %s ins EEPROM geschrieben", module_id, idx)
+
+    async def async_set_led(self, module_id: str, mode: str) -> None:
+        await self.async_send(module_id, culcmd.led_cmd(mode))
+        _LOGGER.info("Modul %s: LED %s (wird im EEPROM gespeichert)", module_id, mode)
+
+    async def async_set_itclock(self, module_id: str, us: int) -> None:
+        if not self.can_configure_radio(module_id) or "i" not in (self.modules[module_id].cmds or ""):
+            raise ValueError("ITClock nur am 433-MHz-Modul")
+        await self.async_send(module_id, culcmd.itclock_cmd(us))
+        _LOGGER.info("Modul %s: ITClock %d µs (nur bis zum Neustart des MapleCUN)", module_id, us)
+
+    async def async_send_raw(self, module_id: str, command: str, force: bool = False,
+                             timeout: float = REPLY_TIMEOUT) -> str | None:
+        """Beliebiges Kommando (FHEM "set raw"/"get raw"); erste Antwortzeile oder None.
+
+        "B…" (Bootloader/Neustart) und "e…" (Werkseinstellungen) nur mit force.
+        Bei wMBus-Modulen zählen Telegrammzeilen ("b…") nicht als Antwort.
+        """
+        if not command:
+            raise ValueError("leeres Kommando")
+        if culcmd.raw_blocked(command) and not force:
+            raise PermissionError(f"Kommando {command!r} nur mit force: true")
+        mod = self.modules.get(module_id)
+        if mod is None:
+            raise ConnectionError(f"Modul {module_id} ist nicht eingerichtet")
+        pattern = r"^(?!b[0-9A-FY])" if mod.is_wmbus else r"."
+        _LOGGER.info("Modul %s: send_raw %r%s", module_id, command, " (force)" if force else "")
+        reply = await self.async_request(module_id, command, pattern, timeout)
+        async_dispatcher_send(
+            self.hass, signal_raw(self.entry_id, module_id), f"{command} -> {reply if reply is not None else '(keine Antwort)'}"
+        )
+        return reply
 
     # ------------------------------------------------------------------ Geräteerkennung
     def is_configured(self, key: str) -> bool:

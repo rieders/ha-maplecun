@@ -307,6 +307,80 @@
       },
       "meter_last_telegram": {
         "name": "Letztes Telegramm (roh)"
+      },
+      "module_version": {
+        "name": "Firmware Modul {module}"
+      },
+      "module_cmds": {
+        "name": "Kommandos Modul {module}"
+      },
+      "module_uptime": {
+        "name": "Laufzeit Modul {module}"
+      },
+      "module_credit": {
+        "name": "Sendeguthaben Modul {module}"
+      },
+      "module_freq": {
+        "name": "Frequenz Modul {module}"
+      },
+      "module_bwidth": {
+        "name": "Bandbreite Modul {module}"
+      },
+      "module_rampl": {
+        "name": "Verstärkung Modul {module}"
+      },
+      "module_sens": {
+        "name": "Empfindlichkeit Modul {module}"
+      }
+    },
+    "button": {
+      "refresh_info": {
+        "name": "Modulwerte aktualisieren"
+      },
+      "reopen": {
+        "name": "Modul {module} neu verbinden"
+      }
+    },
+    "number": {
+      "set_freq": {
+        "name": "Frequenz setzen Modul {module}"
+      },
+      "set_itclock": {
+        "name": "Intertechno-Takt Modul {module}"
+      }
+    },
+    "select": {
+      "set_bwidth": {
+        "name": "Bandbreite setzen Modul {module}"
+      },
+      "set_rampl": {
+        "name": "Verstärkung setzen Modul {module}"
+      },
+      "set_sens": {
+        "name": "Empfindlichkeit setzen Modul {module}"
+      },
+      "set_patable": {
+        "name": "Sendeleistung Modul {module}",
+        "state": {
+          "00": "-10 dBm (Rampe)",
+          "01": "-5 dBm (Rampe)",
+          "02": "0 dBm (Rampe)",
+          "03": "5 dBm (Rampe)",
+          "04": "10 dBm (Rampe)",
+          "05": "-10 dBm",
+          "06": "-5 dBm",
+          "07": "0 dBm",
+          "08": "5 dBm",
+          "09": "10 dBm"
+        }
+      },
+      "set_led": {
+        "name": "LED Modul {module}",
+        "state": {
+          "off": "Aus",
+          "on": "An",
+          "blink": "Blinken"
+        }
       }
     }
   },
@@ -332,6 +406,32 @@
           "description": "MapleCUN-Eintrag (nur bei mehreren Einträgen nötig)."
         }
       }
+    },
+    "send_raw": {
+      "name": "Rohkommando senden",
+      "description": "Sendet ein Firmware-Kommando an ein Modul (wie FHEM „set raw“) und liefert die erste Antwortzeile zurück. Kommandos, die mit B (Bootloader/Neustart) oder e (Werkseinstellungen) beginnen, werden ohne force abgelehnt.",
+      "fields": {
+        "module": {
+          "name": "Modul",
+          "description": "Modulnummer 1–4."
+        },
+        "command": {
+          "name": "Kommando",
+          "description": "a-culfw-Kommando, z. B. V, ?, C0D, X."
+        },
+        "force": {
+          "name": "Erzwingen",
+          "description": "Auch Kommandos mit B oder e am Anfang zulassen."
+        },
+        "timeout": {
+          "name": "Wartezeit",
+          "description": "Sekunden, die auf eine Antwort gewartet wird."
+        },
+        "config_entry_id": {
+          "name": "Eintrag",
+          "description": "MapleCUN-Eintrag (nur bei mehreren Einträgen nötig)."
+        }
+      }
     }
   },
   "exceptions": {
@@ -346,6 +446,12 @@
     },
     "file_error": {
       "message": "{path} kann nicht gelesen werden: {error}"
+    },
+    "module_not_active": {
+      "message": "Modul {module} ist nicht aktiv."
+    },
+    "raw_blocked": {
+      "message": "Kommando {command} wird abgelehnt (B = Bootloader/Neustart, e = Werkseinstellungen). Nur mit force: true."
     }
   }
 }

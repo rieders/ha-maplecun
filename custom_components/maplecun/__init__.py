@@ -11,7 +11,7 @@ import logging
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv, device_registry as dr
 from homeassistant.helpers.typing import ConfigType
 import voluptuous as vol
@@ -33,13 +33,25 @@ from .hub import MapleCunHub
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR, Platform.SWITCH]
+PLATFORMS: list[Platform] = [
+    Platform.BINARY_SENSOR, Platform.BUTTON, Platform.NUMBER, Platform.SELECT, Platform.SENSOR, Platform.SWITCH,
+]
 
 type MapleCunConfigEntry = ConfigEntry[MapleCunHub]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 SERVICE_IMPORT_FHEM_LOG = "import_fhem_log"
+SERVICE_SEND_RAW = "send_raw"
+SEND_RAW_SCHEMA = vol.Schema(
+    {
+        vol.Required("module"): vol.In(["1", "2", "3", "4"]),
+        vol.Required("command"): vol.All(cv.string, vol.Length(min=1, max=200)),
+        vol.Optional("force", default=False): cv.boolean,
+        vol.Optional("timeout", default=3.0): vol.All(vol.Coerce(float), vol.Range(min=0.5, max=10)),
+        vol.Optional("config_entry_id"): cv.string,
+    }
+)
 IMPORT_SCHEMA = vol.Schema(
     {
         vol.Required("path"): cv.string,
@@ -53,9 +65,7 @@ IMPORT_SCHEMA = vol.Schema(
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Aktionen registrieren."""
 
-    async def _import_fhem_log(call: ServiceCall) -> ServiceResponse:
-        from . import importer
-
+    def _entry_for(call: ServiceCall):
         entries = [
             e for e in hass.config_entries.async_entries(DOMAIN)
             if e.state is ConfigEntryState.LOADED
@@ -66,6 +76,32 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 translation_domain=DOMAIN,
                 translation_key="no_entry" if not entries else "multiple_entries",
             )
+        return entries
+
+    async def _send_raw(call: ServiceCall) -> ServiceResponse:
+        """FHEM "set/get raw": Kommando an ein Modul, erste Antwortzeile als response data."""
+        hub = _entry_for(call)[0].runtime_data
+        module, command = call.data["module"], call.data["command"].strip()
+        if module not in hub.modules:
+            raise ServiceValidationError(translation_domain=DOMAIN, translation_key="module_not_active",
+                                         translation_placeholders={"module": module})
+        try:
+            reply = await hub.async_send_raw(module, command, force=call.data["force"], timeout=call.data["timeout"])
+        except PermissionError as err:
+            raise ServiceValidationError(translation_domain=DOMAIN, translation_key="raw_blocked",
+                                         translation_placeholders={"command": command}) from err
+        except (ConnectionError, OSError) as err:
+            raise HomeAssistantError(str(err)) from err
+        return {"module": module, "command": command, "response": reply}
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_SEND_RAW, _send_raw, schema=SEND_RAW_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
+    )
+
+    async def _import_fhem_log(call: ServiceCall) -> ServiceResponse:
+        from . import importer
+
+        entries = _entry_for(call)
         path = call.data["path"]
         allowed = await hass.async_add_executor_job(hass.config.is_allowed_path, path)
         if not allowed:

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 
 import pytest
 
@@ -91,6 +92,11 @@ async def _settle(hass, t=0.3):
         await hass.async_block_till_done()
 
 
+def _cmds(mod) -> list[str]:
+    """Gesendete Befehle ohne die lesenden Modulabfragen (Cxx, X, t)."""
+    return [c for c in mod.received if not re.fullmatch(r"C[0-9A-F]{2}|X|t", c)]
+
+
 def _modules(mods, roles=("wmbus_t", "rf433", "off", "monitor")):
     return {k: {"port": mods[k].port, "role": r} for k, r in zip("1234", roles)}
 
@@ -151,8 +157,8 @@ async def test_config_flow(hass: HomeAssistant, mods):
     assert r["data"]["modules"]["2"]["role"] == "rf433"
     assert "FFFF0F0FFF" in r["options"]["it_devices"]
     await _settle(hass, 0.6)
-    assert mods["1"].received[:4] == ["V", "?", "X21", "brt"]
-    assert mods["2"].received[:3] == ["V", "?", "X21"]
+    assert _cmds(mods["1"])[:4] == ["V", "?", "X21", "brt"]
+    assert _cmds(mods["2"])[:3] == ["V", "?", "X21"]
     assert mods["4"].received == []           # monitor: nichts senden
     entry = hass.config_entries.async_entries(DOMAIN)[0]
     await hass.config_entries.async_unload(entry.entry_id)
@@ -350,7 +356,7 @@ async def _setup(hass, mods, roles=("wmbus_t", "rf433", "off", "monitor"), init=
 async def test_wmbus_mode_acknowledged(hass: HomeAssistant, mods, firmware):
     """brt -> TMODE: Antwort ausgewertet, im Diagnose-Sensor sichtbar."""
     entry = await _setup(hass, mods)
-    assert mods["1"].received == ["V", "?", "X21", "brt"]
+    assert _cmds(mods["1"]) == ["V", "?", "X21", "brt"]
     assert firmware.mode[0] == "wmbus_t"
     st = hass.states.get("sensor.maplecun_test_receive_mode_module_1")
     assert st.state == "TMODE"
@@ -380,7 +386,7 @@ async def test_wmbus_c_not_supported_by_a_culfw(hass: HomeAssistant, mods, firmw
     """a-culfw hat keinen C-Modus: "brc" wird gar nicht erst gesendet (es würde über die
     globale Variable mbus_mode auch den Empfang anderer Module beenden)."""
     entry = await _setup(hass, mods, roles=("wmbus_c", "rf433", "off", "monitor"))
-    assert mods["1"].received == ["V", "?"]
+    assert _cmds(mods["1"]) == ["V", "?"]
     hub = entry.runtime_data
     assert hub.modules["1"].unsupported == "no_cmode"
     assert "keinen C-Modus" in caplog.text
@@ -408,7 +414,7 @@ async def test_wmbus_c_off_reply_other_firmware(hass: HomeAssistant, mods, firmw
     firmware.handle = lambda inst, cmd: (
         ["V 1.67 CUL868"] if cmd == "V" else orig(inst, cmd))
     entry = await _setup(hass, mods, roles=("wmbus_c", "rf433", "off", "monitor"))
-    assert mods["1"].received == ["V", "?", "X21", "brc"]
+    assert _cmds(mods["1"]) == ["V", "?", "X21", "brc"]
     assert entry.runtime_data.modules["1"].unsupported == "no_cmode"
     await mods["1"].send("OFF")
     await _settle(hass)
@@ -419,7 +425,7 @@ async def test_wmbus_c_off_reply_other_firmware(hass: HomeAssistant, mods, firmw
 async def test_wmbus_role_without_b_command(hass: HomeAssistant, mods, firmware):
     """Modul 4 (fntab3) kennt kein "b": Rolle nicht unterstützt, nichts senden außer V und ?."""
     entry = await _setup(hass, mods, roles=("off", "rf433", "off", "wmbus_s"))
-    assert mods["4"].received == ["V", "?"]
+    assert _cmds(mods["4"]) == ["V", "?"]
     assert entry.runtime_data.modules["4"].unsupported == "no_b"
     await hass.config_entries.async_unload(entry.entry_id)
 
@@ -448,7 +454,7 @@ async def test_wmbus_c_unsupported_frees_s_module(hass: HomeAssistant, mods, fir
     """Echte Ausgangslage: Modul 1 "C", Modul 3 "S". brc -> OFF, danach bekommt Modul 3 den Empfang."""
     entry = await _setup(hass, mods, roles=("wmbus_c", "rf433", "wmbus_s", "off"))
     await _settle(hass, 0.4)
-    assert mods["3"].received == ["V", "?", "X21", "brs"]
+    assert _cmds(mods["3"]) == ["V", "?", "X21", "brs"]
     assert "brc" not in mods["1"].received
     assert firmware.receiving() == {2: "wmbus_s"}         # S-Empfang läuft wirklich
     assert hass.states.get("sensor.maplecun_test_receive_mode_module_3").state == "SMODE"
@@ -465,7 +471,7 @@ async def test_wmbus_unsolicited_off(hass: HomeAssistant, mods, firmware):
     await mods["2"].send("OFF")                    # 433-MHz-Modul: unverändert
     await _settle(hass)
     assert mods["1"].received.count("brt") == 2
-    assert mods["2"].received == ["V", "?", "X21"]
+    assert _cmds(mods["2"]) == ["V", "?", "X21"]
     await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -491,10 +497,10 @@ async def test_init_mode_off_sends_only_reads(hass: HomeAssistant, mods, firmwar
     """Ohne "Empfangsmodus setzen": nur V und ?, auch der Wächter sendet nichts."""
     import time
     entry = await _setup(hass, mods, init=False)
-    assert mods["1"].received == ["V", "?"]
+    assert _cmds(mods["1"]) == ["V", "?"]
     entry.runtime_data.modules["1"].last_line = time.monotonic() - 46 * 60
     await entry.runtime_data._async_watchdog()
-    assert mods["1"].received == ["V", "?"]
+    assert _cmds(mods["1"]) == ["V", "?"]
     await hass.config_entries.async_unload(entry.entry_id)
 
 

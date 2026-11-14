@@ -307,6 +307,80 @@
       },
       "meter_last_telegram": {
         "name": "Last telegram (raw)"
+      },
+      "module_version": {
+        "name": "Firmware module {module}"
+      },
+      "module_cmds": {
+        "name": "Commands module {module}"
+      },
+      "module_uptime": {
+        "name": "Uptime module {module}"
+      },
+      "module_credit": {
+        "name": "Send credit module {module}"
+      },
+      "module_freq": {
+        "name": "Frequency module {module}"
+      },
+      "module_bwidth": {
+        "name": "Bandwidth module {module}"
+      },
+      "module_rampl": {
+        "name": "Amplification module {module}"
+      },
+      "module_sens": {
+        "name": "Sensitivity module {module}"
+      }
+    },
+    "button": {
+      "refresh_info": {
+        "name": "Refresh module values"
+      },
+      "reopen": {
+        "name": "Reconnect module {module}"
+      }
+    },
+    "number": {
+      "set_freq": {
+        "name": "Set frequency module {module}"
+      },
+      "set_itclock": {
+        "name": "Intertechno clock module {module}"
+      }
+    },
+    "select": {
+      "set_bwidth": {
+        "name": "Set bandwidth module {module}"
+      },
+      "set_rampl": {
+        "name": "Set amplification module {module}"
+      },
+      "set_sens": {
+        "name": "Set sensitivity module {module}"
+      },
+      "set_patable": {
+        "name": "Transmit power module {module}",
+        "state": {
+          "00": "-10 dBm (ramp)",
+          "01": "-5 dBm (ramp)",
+          "02": "0 dBm (ramp)",
+          "03": "5 dBm (ramp)",
+          "04": "10 dBm (ramp)",
+          "05": "-10 dBm",
+          "06": "-5 dBm",
+          "07": "0 dBm",
+          "08": "5 dBm",
+          "09": "10 dBm"
+        }
+      },
+      "set_led": {
+        "name": "LED module {module}",
+        "state": {
+          "off": "Off",
+          "on": "On",
+          "blink": "Blinking"
+        }
       }
     }
   },
@@ -332,6 +406,32 @@
           "description": "MapleCUN entry (only needed with several entries)."
         }
       }
+    },
+    "send_raw": {
+      "name": "Send raw command",
+      "description": "Sends a firmware command to one module (like FHEM “set raw”) and returns the first reply line. Commands starting with B (bootloader/restart) or e (factory reset) are refused unless force is set.",
+      "fields": {
+        "module": {
+          "name": "Module",
+          "description": "Module number 1–4."
+        },
+        "command": {
+          "name": "Command",
+          "description": "a-culfw command, e.g. V, ?, C0D, X."
+        },
+        "force": {
+          "name": "Force",
+          "description": "Also allow commands starting with B or e."
+        },
+        "timeout": {
+          "name": "Timeout",
+          "description": "Seconds to wait for a reply."
+        },
+        "config_entry_id": {
+          "name": "Config entry",
+          "description": "MapleCUN entry (only needed with several entries)."
+        }
+      }
     }
   },
   "exceptions": {
@@ -346,6 +446,12 @@
     },
     "file_error": {
       "message": "Cannot read {path}: {error}"
+    },
+    "module_not_active": {
+      "message": "Module {module} is not active."
+    },
+    "raw_blocked": {
+      "message": "Command {command} is refused (B = bootloader/restart, e = factory reset). Use force: true if you really mean it."
     }
   }
 }

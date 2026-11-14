@@ -43,6 +43,8 @@ class Firmware:
         self.txreport = {i: 0 for i in range(4)}
         self.regs = {i: dict(DEFAULT_REGS) for i in range(4)}
         self.eeprom: list[tuple[int, str]] = []        # (Instanz, "Wxxyy")
+        self.eeprom_regs = {i: {} for i in range(4)}   # geschriebene CC1101-Register je Instanz
+        self.sent: list[tuple[int, str]] = []          # alle Kommandos (Instanz, Kommando)
         self.credit = 900
         self.ticks = 0x0001E240
         self.cmds = dict(CMDS)
@@ -56,6 +58,8 @@ class Firmware:
         return {i: m for i, m in self.mode.items() if m.startswith("wmbus") and self.mbus == m}
 
     def handle(self, inst: int, cmd: str) -> list[str]:
+        if cmd:
+            self.sent.append((inst, cmd))
         if self.silent or not cmd:
             return []
         letters = self.cmds[inst].split()
@@ -79,6 +83,8 @@ class Firmware:
                 return [f"{self.txreport[inst]:02X}{self.credit:5d}"]
             self.txreport[inst] = int(cmd[1:3], 16)
             self.mode[inst] = "slow" if self.txreport[inst] else "off"
+            if self.mbus == "off":                       # set_txrestore: nicht bei aktivem wMBus
+                self.regs[inst].update(self.eeprom_regs[inst])
             return []
         if c == "C" and len(cmd) == 3:
             reg = int(cmd[1:], 16)
@@ -88,5 +94,8 @@ class Firmware:
             return [f"{self.ticks:08X}"]
         if c == "W":
             self.eeprom.append((inst, cmd))
+            addr, val = int(cmd[1:3], 16), int(cmd[3:5], 16)
+            if 0x02 <= addr < 0x02 + 0x29:               # EE_CC1100_CFG + Register
+                self.eeprom_regs[inst][addr - 2] = val
             return []
         return []
