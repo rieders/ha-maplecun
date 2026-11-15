@@ -32,10 +32,10 @@ def _broken_after_restart(fw) -> None:
     fw.chip.update({1: "it", 2: "wmbus"})
 
 
-async def _setup(hass, mods, roles=ROLES, it_devices=None):
+async def _setup(hass, mods, roles=ROLES, it_devices=None, **extra):
     entry = MockConfigEntry(domain=DOMAIN, version=2, title="MapleCUN test", unique_id="127.0.0.1",
         data={"host": "127.0.0.1", "modules": _modules(mods, roles)},
-        options={"init_mode": True, "meters": {}, "revolts": {}, "it_devices": it_devices or {}})
+        options={"init_mode": True, "meters": {}, "revolts": {}, "it_devices": it_devices or {}, **extra})
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await _settle(hass, 0.8)
@@ -104,10 +104,12 @@ async def test_wmbus_reconnect_does_not_touch_slowrf(hass: HomeAssistant, mods, 
 
 
 async def test_intertechno_send_reinitializes(hass: HomeAssistant, mods, firmware, monkeypatch):
-    """Nach "is…" stellt a-culfw SlowRF bei aktivem wMBus nicht wieder her -> neu initialisieren."""
+    """Sendemodul 2 gewählt: nach "is…" stellt a-culfw SlowRF bei aktivem wMBus nicht wieder
+    her -> neu initialisieren."""
     import custom_components.maplecun.hub as hub_mod
     monkeypatch.setattr(hub_mod, "IT_REINIT_DELAY", 0.05)
-    entry = await _setup(hass, mods, it_devices={"FFFF0F0FFF": {"name": "Lampe", "on": "FF", "off": "F0"}})
+    entry = await _setup(hass, mods, it_devices={"FFFF0F0FFF": {"name": "Lampe", "on": "FF", "off": "F0"}},
+                         it_module="2")
     start = len(firmware.sent)
     await hass.services.async_call("switch", "turn_on", {"entity_id": "switch.lampe"}, blocking=True)
     await hass.services.async_call("switch", "turn_off", {"entity_id": "switch.lampe"}, blocking=True)
@@ -116,6 +118,65 @@ async def test_intertechno_send_reinitializes(hass: HomeAssistant, mods, firmwar
     # zwei Sendebefehle kurz hintereinander -> einmal danach neu initialisieren
     assert sent == [(1, "isFFFF0F0FFFFF"), (1, "isFFFF0F0FFFF0"), (2, "brx"), (1, "X21"), (2, "X21"), (2, "brs")]
     assert firmware.slow_receiving(1) and firmware.receiving() == {2: "wmbus_s"}
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+STEHLAMPE = {"FFFF00FFFF": {"name": "Stehlampe", "on": "0F", "off": "F0"}}   # FHEM: DEF "FFFF00FFFF 0F F0"
+
+
+def test_simulator_it_on_wmbus_module_restores_wmbus():
+    """a-culfw: "is…" auf dem wMBus-Modul -> restore_RF_mode -> rf_mbus_init; Modul 2 unberührt."""
+    from .culfw_sim import Firmware
+    fw = Firmware()
+    for inst, cmd in ((1, "X21"), (2, "X21"), (2, "brs")):
+        fw.handle(inst, cmd)
+    assert fw.handle(2, "isFFFF00FFFF0F") == ["isFFFF00FFFF0F"]
+    assert fw.slow_receiving(1) and fw.receiving() == {2: "wmbus_s"}
+    # Gegenprobe: über Modul 2 gesendet bleibt Modul 2 bei laufendem wMBus taub
+    fw.handle(1, "isFFFF00FFFFF0")
+    assert not fw.slow_receiving(1) and fw.receiving() == {2: "wmbus_s"}
+    # und über ein Modul mit Rolle "Aus" endet wMBus überall (mbus_mode = WMBUS_NONE)
+    fw.handle(0, "isFFFF00FFFFF0")
+    assert fw.receiving() == {}
+
+
+async def test_intertechno_auto_sends_via_wmbus_module(hass: HomeAssistant, mods, firmware):
+    """Vorgabe wie FHEM (IODev = wMBus-Modul): senden über Modul 3, keine Neuinitialisierung,
+    433-MHz-Empfang auf Modul 2 und wMBus S auf Modul 3 laufen weiter."""
+    entry = await _setup(hass, mods, it_devices=STEHLAMPE)
+    hub = entry.runtime_data
+    assert hub.it_module() == "3" and hub.it_module_choices() == ["2", "3"]
+    start = len(firmware.sent)
+    await hass.services.async_call("switch", "turn_on", {"entity_id": "switch.stehlampe"}, blocking=True)
+    await hass.services.async_call("switch", "turn_off", {"entity_id": "switch.stehlampe"}, blocking=True)
+    await _settle(hass, 1.5)
+    assert firmware.sent[start:] == [(2, "isFFFF00FFFF0F"), (2, "isFFFF00FFFFF0")]
+    assert firmware.slow_receiving(1) and firmware.receiving() == {2: "wmbus_s"}
+    assert hass.states.get("switch.stehlampe").state == "off"
+    # Bestätigung der Firmware zählt nicht als Empfang
+    assert hub.modules["3"].rx_count == 0
+    # Fernbedienung wird auf Modul 2 weiter empfangen
+    from custom_components.maplecun import intertechno
+    await _radio(firmware, mods["2"], intertechno.encode("FFFF00FFFF", "0F") + "1A")
+    await _settle(hass)
+    assert hass.states.get("switch.stehlampe").state == "on"
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_intertechno_auto_falls_back_to_433_module(hass: HomeAssistant, mods, firmware):
+    """Ohne wMBus-Modul sendet "auto" über das 433-MHz-Modul; Module mit Rolle "Aus" nie."""
+    entry = await _setup(hass, mods, roles=("off", "rf433", "off", "off"), it_devices=STEHLAMPE, it_module="3")
+    assert entry.runtime_data.it_module_choices() == ["2"]
+    assert entry.runtime_data.it_module() == "2"
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_intertechno_auto_uses_433_module_while_wmbus_disconnected(hass: HomeAssistant, mods, firmware):
+    entry = await _setup(hass, mods, it_devices=STEHLAMPE)
+    hub = entry.runtime_data
+    hub.modules["3"].connected = False
+    assert hub.it_module() == "2"
+    hub.modules["3"].connected = True
     await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -183,3 +244,39 @@ async def test_reads_do_not_change_reception(hass: HomeAssistant, mods, firmware
     assert sent <= {"V", "?", "X", "t", "C0D", "C0E", "C0F", "C10", "C1B", "C1D"}
     assert (dict(firmware.mode), dict(firmware.chip), firmware.mbus) == before
     await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_options_it_module(hass: HomeAssistant, mods, firmware):
+    """Einstellungen: Sendemodul wählbar (auto, 2, 3); Module mit Rolle "Aus" werden nicht angeboten."""
+    entry = await _setup(hass, mods, it_devices=STEHLAMPE)
+    r = await hass.config_entries.options.async_init(entry.entry_id)
+    r = await hass.config_entries.options.async_configure(r["flow_id"], {"next_step_id": "settings"})
+    sel = next(v for k, v in r["data_schema"].schema.items() if k == "it_module")
+    assert sel.config["options"] == ["auto", "2", "3"]
+    r = await hass.config_entries.options.async_configure(r["flow_id"], {
+        "auto_revolt": True, "auto_it": True, "auto_sensor": False, "it_module": "2"})
+    assert r["type"] == "create_entry" and entry.options["it_module"] == "2"
+    await _settle(hass, 1.0)                           # Optionen -> Neuladen
+    assert entry.runtime_data.it_module() == "2"
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_it_switch_shows_commands_and_hints_wrong_suffix(hass: HomeAssistant, mods, firmware, caplog):
+    """Stehlampe mit Vorgabe-Endung FF: Attribute zeigen den gesendeten Befehl, empfangenes 0F
+    erzeugt einmal einen Hinweis im Log."""
+    entry = await _setup(hass, mods, it_devices={"FFFF00FFFF": {"name": "Stehlampe", "on": "FF", "off": "F0"}})
+    attrs = hass.states.get("switch.stehlampe").attributes
+    assert attrs["befehl_ein"] == "isFFFF00FFFFFF" and attrs["befehl_aus"] == "isFFFF00FFFFF0"
+    assert attrs["sendemodul"] == "3"
+    from custom_components.maplecun import intertechno
+    for _ in range(2):
+        await _radio(firmware, mods["2"], intertechno.encode("FFFF00FFFF", "0F") + "1A")
+        await _settle(hass)
+    assert caplog.text.count("Fernbedienung sendet Befehl 0F") == 1
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+def test_adopt_uses_received_on_suffix():
+    from custom_components.maplecun.hub import it_cmds_from_seen
+    assert it_cmds_from_seen({"cmd": "F0", "cmds": ["0F", "F0"]}) == {"on": "0F", "off": "F0"}
+    assert it_cmds_from_seen({"cmd": "FF"}) == {"on": "FF", "off": "F0"}

@@ -181,10 +181,11 @@ async def test_full(hass: HomeAssistant, mods, caplog):
     assert hass.states.get("binary_sensor.maplecun_test_module_1").state == "on"
     assert hass.states.get("binary_sensor.maplecun_test_module_4").state == "on"
 
-    # Intertechno über Modul 2 schalten
+    # Intertechno schalten – Vorgabe wie FHEM: über das wMBus-Modul (hier Modul 1)
     await hass.services.async_call("switch", "turn_on", {"entity_id": "switch.steckdose_flur"}, blocking=True)
     await _settle(hass)
-    assert "isFFFF0F0FFFFF" in mods["2"].received
+    assert "isFFFF0F0FFFFF" in mods["1"].received
+    assert "isFFFF0F0FFFFF" not in mods["2"].received
     # Wandschalter mit gleichem Code drückt "Aus" -> Zustand folgt
     await mods["2"].send(intertechno.encode("FFFF0F0FFF", "F0") + "1A")
     await _settle(hass)
@@ -295,7 +296,8 @@ async def test_full(hass: HomeAssistant, mods, caplog):
     await mods["2"].stop()
     await _settle(hass, 0.5)
     assert hass.states.get("binary_sensor.maplecun_test_module_2").state == "off"
-    assert hass.states.get("switch.steckdose_flur").state == "unavailable"
+    # Intertechno sendet über das wMBus-Modul (Modul 1) und bleibt verfügbar
+    assert hass.states.get("switch.steckdose_flur").state == "off"
     # Zähler senden selten: Wert bleibt erhalten
     assert hass.states.get("sensor.heizkostenverteiler_16660259_consumption_units").state == "488"
     await hass.config_entries.async_unload(entry.entry_id)

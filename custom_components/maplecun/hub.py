@@ -53,11 +53,16 @@ from .const import (
     HEARD_MAX,
     INFO_SLOW_INTERVAL,
     IT_REINIT_DELAY,
+    IT_ECHO_TIMEOUT,
+    IT_MODULE_AUTO,
+    CONF_IT_MODULE,
     STARTUP_SLOWRF_WAIT,
     WATCHDOG_SILENCE_SLOWRF,
     WMBUS_OFF_CMD,
     ROLE_RF433,
     ROLE_WMBUS_C,
+    ROLE_WMBUS_S,
+    ROLE_WMBUS_T,
     SEEN_MAX,
     STORAGE_VERSION,
     UNSUPPORTED_NO_B,
@@ -133,6 +138,13 @@ class Module:
         return self.role in WMBUS_ROLES
 
 
+def it_cmds_from_seen(info: dict) -> dict[str, str]:
+    """Ein-/Aus-Endung für einen empfangenen Code: gehörtes "0F" ist der Ein-Befehl
+    (Elro/PT2262-artig, z. B. FHEM-DEF "FFFF00FFFF 0F F0"), sonst die Vorgabe FF/F0."""
+    seen = set(info.get("cmds", [])) | ({info["cmd"]} if info.get("cmd") else set())
+    return {CONF_ON: "0F" if "0F" in seen else DEFAULT_IT_ON, CONF_OFF: DEFAULT_IT_OFF}
+
+
 class MapleCunHub:
     """Verwaltet alle Modul-Verbindungen eines MapleCUN."""
 
@@ -186,6 +198,7 @@ class MapleCunHub:
         self._slowrf_ready = asyncio.Event()     # alle SlowRF-Module einmal initialisiert (Start)
         self._owner_known = asyncio.Event()      # wMBus-Modul hat V/? beantwortet (Start)
         self._it_reinit: dict[str, asyncio.Task] = {}
+        self._it_hint: set[str] = set()          # Hinweis "falsche Endung" je Code nur einmal
 
     # ------------------------------------------------------------------ Lebenszyklus
     async def async_start(self) -> None:
@@ -672,20 +685,71 @@ class MapleCunHub:
             )
             await self._async_set_mode_safe(mod.module_id, "Wächter")
 
-    async def async_send_it(self, module_id: str, command: str) -> None:
-        """Intertechno senden ("is…").
+    # ------------------------------------------------------------------ Intertechno senden
+    def it_module_choices(self) -> list[str]:
+        """Module, über die Intertechno gesendet werden darf.
 
-        a-culfw stellt danach den SlowRF-Empfang über set_txrestore wieder her
-        (intertechno.c, restore_RF_mode) – das passiert bei aktivem wMBus nicht: der Chip
-        bleibt in der Intertechno-Konfiguration, der GDO-Interrupt aus. Deshalb anschließend
-        wie beim Verbinden neu initialisieren (wMBus kurz aus).
+        a-culfw (intertechno.c it_send, USE_RF_MODE): change_RF_mode(intertechno) merkt sich den
+        Modus des sendenden CC1101, nach dem Senden stellt restore_RF_mode ihn wieder her:
+        * SlowRF-Modul: set_RF_mode(slow) -> set_txrestore – bei aktivem wMBus wirkungslos
+          (rf_receive.c), das Modul bleibt taub und muss neu initialisiert werden.
+        * wMBus-Modul (S/T): set_RF_mode(WMBUS_x) -> rf_mbus_init – der Empfang läuft danach
+          von selbst weiter, das SlowRF-Modul wird nie angefasst. So sendet FHEM mit
+          IODev = wMBus-Modul (10_IT.pm ohne switch_rfmode: nur "is…").
+        Module mit Rolle "Aus" sind ausgeschlossen: restore_RF_mode -> set_RF_mode(off) setzt
+        die globale Variable mbus_mode = WMBUS_NONE und beendet den wMBus-Empfang überall.
         """
-        await self.async_send(module_id, command)
+        owner = self.wmbus_owner()
+        return [
+            mid for mid in sorted(self.modules)
+            if self.modules[mid].role == ROLE_RF433
+            or (self.modules[mid].role in (ROLE_WMBUS_S, ROLE_WMBUS_T) and mid == owner)
+        ]
+
+    def it_module(self) -> str | None:
+        """Modul, über das jetzt gesendet wird.
+
+        "auto" (Vorgabe): das wMBus-Modul wie in FHEM (am Gerät nachweislich zuverlässig, und
+        433-MHz-Empfang sowie wMBus laufen ohne Neuinitialisierung weiter); ist es nicht
+        verbunden oder fehlt es, das 433-MHz-Modul.
+        """
+        choices = self.it_module_choices()
+        choice = self.entry.options.get(CONF_IT_MODULE, IT_MODULE_AUTO)
+        if choice in choices:
+            return choice
+        owner = self.wmbus_owner()
+        rf = next((m for m in choices if self.modules[m].role == ROLE_RF433), None)
+        if owner in choices and (self.is_connected(owner) or not self.is_connected(rf)):
+            return owner
+        return rf or (choices[0] if choices else None)
+
+    async def async_send_it(self, command: str, module_id: str | None = None) -> str:
+        """Intertechno senden ("is…") und auf die Wiederholung der Firmware warten.
+
+        Über das wMBus-Modul ist danach nichts zu tun (restore_RF_mode startet wMBus neu).
+        Über das SlowRF-Modul bei aktivem wMBus: anschließend wie beim Verbinden neu
+        initialisieren (wMBus kurz aus), weil set_txrestore dann wirkungslos ist.
+        Liefert die Nummer des sendenden Moduls.
+        """
+        module_id = module_id or self.it_module()
+        mod = self.modules.get(module_id) if module_id else None
+        if mod is None:
+            raise ConnectionError("Kein Modul für Intertechno eingerichtet")
+        # Nicht mitten in eine Initialisierung (brx/X21/brs) hinein senden
+        async with self._radio_lock:
+            echo = await self.async_request(module_id, command, rf"^{re.escape(command)}$", IT_ECHO_TIMEOUT)
+        if echo is None:
+            _LOGGER.warning("Modul %s: keine Bestätigung der Firmware für %s", module_id, command)
+        else:
+            _LOGGER.debug("Modul %s: %s gesendet", module_id, command)
+        if mod.role != ROLE_RF433:
+            return module_id
         if not self.init_mode or self._active_owner() is None or self._wmbus_on is False:
-            return
+            return module_id
         if (old := self._it_reinit.get(module_id)) is not None and not old.done():
             old.cancel()                       # mehrere Sendebefehle kurz hintereinander: einmal danach
         self._it_reinit[module_id] = self.hass.async_create_task(self._async_reinit_after_it(module_id))
+        return module_id
 
     async def _async_reinit_after_it(self, module_id: str) -> None:
         await asyncio.sleep(IT_REINIT_DELAY)
@@ -938,9 +1002,7 @@ class MapleCunHub:
             elif kind == KIND_REVOLT:
                 revolts.setdefault(ident, {CONF_NAME: f"Revolt {ident}"})
             elif kind == KIND_IT:
-                its.setdefault(
-                    ident, {CONF_NAME: f"Intertechno {ident}", CONF_ON: DEFAULT_IT_ON, CONF_OFF: DEFAULT_IT_OFF}
-                )
+                its.setdefault(ident, {CONF_NAME: f"Intertechno {ident}", **it_cmds_from_seen(info)})
             elif kind == KIND_SENSOR:
                 sensors.setdefault(ident, {CONF_NAME: f"Thermometer {ident}", CONF_MODEL: info.get("model", "")})
         self._save_later(1)
@@ -1167,9 +1229,19 @@ class MapleCunHub:
     @callback
     def _handle_it(self, code: str, cmd: str) -> None:
         if code in self.it_codes:
+            dev = self.entry.options.get(CONF_IT_DEVICES, {}).get(code, {})
+            if cmd not in (dev.get(CONF_ON), dev.get(CONF_OFF)) and code not in self._it_hint:
+                # z. B. Elro/PT2262: Ein = 0F, eingetragen ist aber die Vorgabe FF
+                self._it_hint.add(code)
+                _LOGGER.warning(
+                    "Intertechno %s (%s): Fernbedienung sendet Befehl %s, eingetragen sind Ein = %s, "
+                    "Aus = %s – Endungen unter Konfigurieren → Ein-/Aus-Codes ändern anpassen",
+                    code, dev.get(CONF_NAME, code), cmd, dev.get(CONF_ON), dev.get(CONF_OFF),
+                )
             async_dispatcher_send(self.hass, signal_it(self.entry_id, code), cmd)
         else:
-            self._discover(KIND_IT, code, {"cmd": cmd})
+            seen = set(self.discovered.get(f"{KIND_IT}:{code}", {}).get("cmds", [])) | {cmd}
+            self._discover(KIND_IT, code, {"cmd": cmd, "cmds": sorted(seen)})
 
     # --- Temperatur-/Feuchtesensoren
     @callback

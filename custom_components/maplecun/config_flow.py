@@ -27,6 +27,8 @@ from .const import (
     CONF_INIT,
     CONF_IT_CODES,
     CONF_IT_DEVICES,
+    CONF_IT_MODULE,
+    IT_MODULE_AUTO,
     CONF_KEY,
     CONF_LOG_UNKNOWN,
     CONF_METER_ID,
@@ -277,8 +279,13 @@ class MapleCunOptionsFlow(OptionsFlow):
                     KIND_SENSOR: user_input["auto_sensor"],
                 },
                 CONF_LOG_UNKNOWN: user_input.get(CONF_LOG_UNKNOWN, False),
+                CONF_IT_MODULE: user_input.get(CONF_IT_MODULE, IT_MODULE_AUTO),
             })
         hub = self._hub()
+        it_choices = [IT_MODULE_AUTO] + (hub.it_module_choices() if hub else [])
+        it_current = self.config_entry.options.get(CONF_IT_MODULE, IT_MODULE_AUTO)
+        if it_current not in it_choices:
+            it_current = IT_MODULE_AUTO
         schema = vol.Schema(
             {
                 vol.Required("auto_revolt", default=auto[KIND_REVOLT]): bool,
@@ -287,6 +294,8 @@ class MapleCunOptionsFlow(OptionsFlow):
                 vol.Optional(
                     CONF_LOG_UNKNOWN, default=self.config_entry.options.get(CONF_LOG_UNKNOWN, False)
                 ): bool,
+                vol.Optional(CONF_IT_MODULE, default=it_current): SelectSelector(SelectSelectorConfig(
+                    options=it_choices, translation_key="it_module", mode=SelectSelectorMode.DROPDOWN)),
                 vol.Optional("reset_ignored", default=False): bool,
             }
         )

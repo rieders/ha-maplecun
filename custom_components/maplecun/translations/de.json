@@ -131,10 +131,12 @@
           "auto_it": "Intertechno-Steckdosen/Fernbedienungen",
           "reset_ignored": "Ignorierte Geräte wieder anzeigen",
           "auto_sensor": "433-MHz-Thermometer (Vorsicht: auch die der Nachbarn)",
-          "log_unknown_meters": "Unbekannte Wireless-M-Bus-Zähler ins Log schreiben (nur ID, Typ, RSSI)"
+          "log_unknown_meters": "Unbekannte Wireless-M-Bus-Zähler ins Log schreiben (nur ID, Typ, RSSI)",
+          "it_module": "Intertechno senden über"
         },
         "data_description": {
-          "log_unknown_meters": "Diagnose, um die eigenen Zähler-IDs zu finden. Es wird nichts gespeichert. Standardmäßig aus."
+          "log_unknown_meters": "Diagnose, um die eigenen Zähler-IDs zu finden. Es wird nichts gespeichert. Standardmäßig aus.",
+          "it_module": "Automatisch: wMBus-Modul wie in FHEM (433-MHz-Empfang und wMBus laufen ungestört weiter), sonst 433-MHz-Modul. Über das 433-MHz-Modul muss die Integration den Empfang nach jedem Senden neu initialisieren (wMBus kurz aus)."
         }
       },
       "edit_meter": {
@@ -196,6 +198,15 @@
         "rf433": "433 MHz (Revolt, Intertechno)",
         "monitor": "Nur überwachen (z. B. HomeMatic/MAX! in FHEM)",
         "off": "Aus"
+      }
+    },
+    "it_module": {
+      "options": {
+        "auto": "Automatisch (wMBus-Modul wie FHEM)",
+        "1": "Modul 1",
+        "2": "Modul 2",
+        "3": "Modul 3",
+        "4": "Modul 4"
       }
     }
   },

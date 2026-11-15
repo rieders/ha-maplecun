@@ -16,8 +16,13 @@ Nachgebildet nach dem a-culfw-Quelltext (github.com/heliflieger/a-culfw, Stand d
                         set_txrestore (clib/rf_receive.c:137) kehrt sofort zurück, solange
                         mbus_mode gesetzt ist: dann wird der CC1101 NICHT neu geladen und nicht
                         in den Empfang geschaltet – ein vorher gestörtes Modul bleibt stumm
-* "is…"              -> Intertechno senden (clib/intertechno.c): Chip wird umkonfiguriert,
-                        danach restore_RF_mode -> set_txrestore – bei aktivem wMBus wirkungslos
+* "is…"              -> Intertechno senden (clib/intertechno.c, USE_RF_MODE): change_RF_mode
+                        merkt sich den Modus des Moduls, Chip wird umkonfiguriert, danach
+                        restore_RF_mode -> set_RF_mode(gemerkter Modus):
+                          slow  -> set_txrestore – bei aktivem wMBus wirkungslos (Modul taub)
+                          wMBus -> rf_mbus_init: Empfang läuft weiter (so sendet FHEM)
+                          off   -> set_ccoff und mbus_mode = WMBUS_NONE (wMBus überall aus)
+                        Antwort: das Kommando selbst ("isFFFF00FFFF0F")
 * "Cxx"              -> "Cxx = HH / DDD"                         (clib/cc1100.c, ccreg)
 * "t"                -> 8 Hex-Ziffern (Ticks à 8 ms)              (clib/clock.c)
 * "Wxxyy"            -> EEPROM schreiben (nur protokolliert)
@@ -80,6 +85,20 @@ class Firmware:
         else:
             self.chip[inst] = "idle"                             # set_ccoff
 
+    def _set_rf_mode(self, inst: int, mode: str) -> None:
+        """clib/rf_mode.c set_RF_mode (nur die hier nachgebildeten Modi)."""
+        if mode == "slow":
+            self._txrestore(inst)
+        elif mode.startswith("wmbus"):
+            for other in self.mode:                      # nur ein wMBus-Modul
+                if other != inst and self.mode[other].startswith("wmbus"):
+                    self.mode[other], self.chip[other] = "off", "idle"
+            self.mbus, self.chip[inst] = mode, "wmbus"
+        else:
+            self.chip[inst] = "idle"                     # set_ccoff
+            self.mbus = "off"                            # default-Zweig: mbus_mode = WMBUS_NONE
+        self.mode[inst] = mode
+
     def handle(self, inst: int, cmd: str) -> list[str]:
         if cmd:
             self.sent.append((inst, cmd))
@@ -111,9 +130,10 @@ class Firmware:
             self._txrestore(inst)
             return []
         if c == "i" and cmd.startswith("is"):
+            saved = self.mode[inst]                      # change_RF_mode -> save_RF_mode
             self.chip[inst] = "it"                       # it_tunein: SRES, IT-Register, GDO als Ausgang
-            self._txrestore(inst)                        # restore_RF_mode -> set_RF_mode(slow)
-            return []
+            self._set_rf_mode(inst, saved)               # restore_RF_mode
+            return [cmd]                                 # it_send gibt "is…" zurück
         if c == "C" and len(cmd) == 3:
             reg = int(cmd[1:], 16)
             val = self.regs[inst].get(reg, 0)

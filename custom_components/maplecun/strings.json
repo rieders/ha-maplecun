@@ -131,10 +131,12 @@
           "auto_it": "Intertechno sockets/remotes",
           "reset_ignored": "Show ignored devices again",
           "auto_sensor": "433 MHz thermometers (careful: neighbours' too)",
-          "log_unknown_meters": "Write unknown wireless M-Bus meters to the log (ID, type, RSSI only)"
+          "log_unknown_meters": "Write unknown wireless M-Bus meters to the log (ID, type, RSSI only)",
+          "it_module": "Send Intertechno via"
         },
         "data_description": {
-          "log_unknown_meters": "Diagnostics for finding your own meter IDs. Nothing is stored. Off by default."
+          "log_unknown_meters": "Diagnostics for finding your own meter IDs. Nothing is stored. Off by default.",
+          "it_module": "Automatic: the wMBus module as in FHEM (433 MHz reception and wMBus keep running), otherwise the 433 MHz module. Sending via the 433 MHz module requires re-initialising reception after each send (wMBus briefly off)."
         }
       },
       "edit_meter": {
@@ -196,6 +198,15 @@
         "rf433": "433 MHz (Revolt, Intertechno)",
         "monitor": "Monitor only (e.g. HomeMatic/MAX! in FHEM)",
         "off": "Off"
+      }
+    },
+    "it_module": {
+      "options": {
+        "auto": "Automatic (wMBus module, as FHEM)",
+        "1": "Module 1",
+        "2": "Module 2",
+        "3": "Module 3",
+        "4": "Module 4"
       }
     }
   },

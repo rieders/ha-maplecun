@@ -16,7 +16,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import MapleCunConfigEntry
 from .devices import via_hub
-from .const import CONF_IT_DEVICES, CONF_NAME, CONF_OFF, CONF_ON, DOMAIN, ROLE_RF433, signal_connection, signal_it
+from .const import CONF_IT_DEVICES, CONF_NAME, CONF_OFF, CONF_ON, DOMAIN, signal_connection, signal_it
 
 
 async def async_setup_entry(
@@ -26,8 +26,8 @@ async def async_setup_entry(
 ) -> None:
     """Je konfigurierter Intertechno-Steckdose einen Schalter anlegen."""
     devices: dict[str, dict] = entry.options.get(CONF_IT_DEVICES, {})
-    module = entry.runtime_data.module_for_role(ROLE_RF433)
-    if module is None:
+    # Sendemodul: Option "it_module" (Vorgabe: wMBus-Modul wie FHEM, sonst 433-MHz-Modul)
+    if not entry.runtime_data.it_module_choices():
         devices = {}
 
     # Geräte entfernen, die in den Optionen gelöscht wurden
@@ -38,7 +38,7 @@ async def async_setup_entry(
             if domain == DOMAIN and ident.startswith(f"{entry.entry_id}_it_") and ident not in wanted:
                 dev_reg.async_remove_device(device.id)
 
-    async_add_entities(IntertechnoSwitch(entry, module.module_id, code, dev) for code, dev in devices.items())
+    async_add_entities(IntertechnoSwitch(entry, code, dev) for code, dev in devices.items())
 
 
 class IntertechnoSwitch(SwitchEntity, RestoreEntity):
@@ -49,9 +49,8 @@ class IntertechnoSwitch(SwitchEntity, RestoreEntity):
     _attr_should_poll = False
     _attr_assumed_state = True
 
-    def __init__(self, entry: MapleCunConfigEntry, module_id: str, code: str, dev: dict) -> None:
+    def __init__(self, entry: MapleCunConfigEntry, code: str, dev: dict) -> None:
         self._entry = entry
-        self._mid = module_id
         self._hub = entry.runtime_data
         self._code = code
         self._on = dev[CONF_ON]
@@ -67,8 +66,18 @@ class IntertechnoSwitch(SwitchEntity, RestoreEntity):
         )
 
     @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Was tatsächlich gesendet wird (Endungen unter Konfigurieren → Ein-/Aus-Codes ändern)."""
+        return {
+            "code": self._code,
+            "befehl_ein": f"is{self._code}{self._on}",
+            "befehl_aus": f"is{self._code}{self._off}",
+            "sendemodul": self._hub.it_module(),
+        }
+
+    @property
     def available(self) -> bool:
-        return self._hub.is_connected(self._mid)
+        return self._hub.is_connected(self._hub.it_module())
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -96,7 +105,7 @@ class IntertechnoSwitch(SwitchEntity, RestoreEntity):
 
     async def _send(self, suffix: str, state: bool) -> None:
         try:
-            await self._hub.async_send_it(self._mid, f"is{self._code}{suffix}")
+            await self._hub.async_send_it(f"is{self._code}{suffix}")
         except (ConnectionError, OSError) as err:
             raise HomeAssistantError(f"Senden an MapleCUN fehlgeschlagen: {err}") from err
         self._attr_is_on = state
