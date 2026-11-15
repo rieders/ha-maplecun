@@ -427,6 +427,15 @@ class _Base(SensorEntity):
         )
 
 
+RAW_SHORT = 32          # Rohzeilen im Zustand: kurze Form, vollständig im Attribut
+
+
+def short_raw(line: str) -> str:
+    """Kurze Form einer Rohzeile für den Zustand – lange Zeilen ohne Leerzeichen liefen auf der
+    Geräteseite über den Kartenrand und verdrängten den Namen."""
+    return line if len(line) <= RAW_SHORT else line[:RAW_SHORT] + "…"
+
+
 def _to_native(value, desc: SensorEntityDescription):
     """Werte für HA aufbereiten (Datum/Zeitstempel)."""
     if desc.device_class == SensorDeviceClass.TIMESTAMP and isinstance(value, datetime):
@@ -526,8 +535,8 @@ class RawSensor(_Base):
     """Diagnose: letzte Rohzeile eines Moduls.
 
     433 MHz / Überwachen: nicht ausgewertete Zeilen; Wireless M-Bus: jede Telegrammzeile
-    (auch fremder Zähler – deshalb standardmäßig deaktiviert). Der Zustand ist auf
-    255 Zeichen gekürzt, die vollständige Zeile steht im Attribut "line".
+    (auch fremder Zähler – deshalb standardmäßig deaktiviert). Zustand: die ersten 32 Zeichen
+    plus "…", die vollständige Zeile steht im Attribut "line".
     """
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
@@ -551,7 +560,7 @@ class RawSensor(_Base):
 
     @callback
     def _update(self, line: str) -> None:
-        self._attr_native_value = line[:RAW_STATE_MAX]
+        self._attr_native_value = short_raw(line)
         self._attr_extra_state_attributes = {"line": line}
         self.async_write_ha_state()
 
@@ -829,14 +838,14 @@ class ModeSensor(_Base):
 class MeterRawSensor(_Base, RestoreEntity):
     """Diagnose: Rohzeile des letzten Telegramms eines angelegten Zählers.
 
-    Zustand: Rohzeile (auf 255 Zeichen gekürzt), vollständig im Attribut "line" (nicht
-    aufgezeichnet). Gefüllt über hub.deliver – Live-Empfang und FHEM-Import gleich.
+    Zustand: die ersten 32 Zeichen plus "…" (eine 255 Zeichen lange Zeile verdrängte auf der
+    Geräteseite den Namen), vollständig im Attribut "telegramm" (nicht aufgezeichnet). Gefüllt über hub.deliver – Live-Empfang und FHEM-Import gleich.
     Nur für angelegte Zähler; Telegramme fremder Zähler erreichen diesen Sensor nie.
     """
 
     _attr_translation_key = "meter_last_telegram"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _unrecorded_attributes = frozenset({"line", "inneres_telegramm"})
+    _unrecorded_attributes = frozenset({"telegramm", "line", "inneres_telegramm"})
 
     def __init__(self, entry, meter_id: str, cfg: dict, type_name: str) -> None:
         super().__init__(entry, None)
@@ -856,10 +865,13 @@ class MeterRawSensor(_Base, RestoreEntity):
         await super().async_added_to_hass()
         if self._attr_native_value is None and (last := await self.async_get_last_state()):
             if last.state not in ("unknown", "unavailable"):
-                self._attr_native_value = last.state
-                self._attr_extra_state_attributes = dict(last.attributes)
+                attrs = dict(last.attributes)
                 for k in ("friendly_name", "icon", "device_class"):
-                    self._attr_extra_state_attributes.pop(k, None)
+                    attrs.pop(k, None)
+                full = attrs.pop("line", None) or attrs.get("telegramm") or last.state   # bis 0.9.4: "line"
+                attrs["telegramm"] = full
+                self._attr_native_value = short_raw(full)
+                self._attr_extra_state_attributes = attrs
         self.async_on_remove(
             async_dispatcher_connect(
                 self.hass, signal_meter_raw(self._entry.entry_id, self._meter_id), self._update
@@ -877,9 +889,9 @@ class MeterRawSensor(_Base, RestoreEntity):
         if isinstance(meter_time, datetime) and meter_time.tzinfo is None:
             meter_time = meter_time.replace(tzinfo=dt_util.get_default_time_zone())
         read_at = meter_time if isinstance(meter_time, datetime) else info["received"]
-        self._attr_native_value = line[:RAW_STATE_MAX]
+        self._attr_native_value = short_raw(line)
         self._attr_extra_state_attributes = {
-            "line": line,
+            "telegramm": line,
             "modul": info.get("module"),
             "netzwerkknoten": bool(info.get("relayed")),
             "ablesezeit": dt_util.as_local(read_at).isoformat(timespec="seconds"),

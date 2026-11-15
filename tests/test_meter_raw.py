@@ -5,7 +5,7 @@ import pytest
 pytest.importorskip("homeassistant")
 
 from homeassistant.core import HomeAssistant, State
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry, mock_restore_cache
 
 from custom_components.maplecun.const import DOMAIN
@@ -32,9 +32,9 @@ async def test_raw_sensor_live(hass: HomeAssistant, mods):
     await _settle(hass, 0.6)
 
     st = hass.states.get("sensor.warmwasser_52144701_last_telegram_raw")
-    assert st.state == WARM
+    assert st.state == WARM[:32] + "…"                         # kurze Form im Zustand
     a = st.attributes
-    assert a["line"] == WARM and a["modul"] == "1" and a["netzwerkknoten"] is False
+    assert a["telegramm"] == WARM and a["modul"] == "1" and a["netzwerkknoten"] is False
     assert a["lqi"] == 0x80 and a["rssi"] == -70.5 and a["inneres_telegramm"] is None
     assert a["ablesezeit"].startswith("2026-10-04T08:13")      # Zeit aus dem Telegramm
     ent = er.async_get(hass).async_get(st.entity_id)
@@ -44,7 +44,7 @@ async def test_raw_sensor_live(hass: HomeAssistant, mods):
     assert hca.attributes["netzwerkknoten"] is True
     assert hca.attributes["rssi"] == -102.0 and hca.attributes["lqi"] == 0x80
     assert hca.attributes["inneres_telegramm"][2:8] == "449344"     # inneres Telegramm: C=44, Hersteller QDS
-    assert "line" in hass.states.get(hca.entity_id).attributes
+    assert hass.states.get(hca.entity_id).attributes["telegramm"].startswith(RELAYED_HCA)
 
     # fremde Zähler: kein Sensor, nichts gespeichert
     hub = entry.runtime_data
@@ -59,7 +59,7 @@ async def test_raw_sensor_live(hass: HomeAssistant, mods):
 
 async def test_raw_sensor_truncated_and_unrecorded(hass: HomeAssistant, mods):
     from custom_components.maplecun.sensor import MeterRawSensor
-    assert "line" in MeterRawSensor._unrecorded_attributes
+    assert "telegramm" in MeterRawSensor._unrecorded_attributes
     entry = _entry(hass, mods, meters=("16660259",))
     assert await hass.config_entries.async_setup(entry.entry_id)
     await _settle(hass, 0.6)
@@ -73,7 +73,7 @@ async def test_raw_sensor_truncated_and_unrecorded(hass: HomeAssistant, mods):
     hub.deliver(tele, rssi, dt_util.utcnow(), "1", line=long_line + "::" + "0" * 300, lqi=lqi)
     await _settle(hass)
     st = hass.states.get("sensor.heizkostenverteiler_16660259_last_telegram_raw")
-    assert len(st.state) == 255 and len(st.attributes["line"]) > 255
+    assert len(st.state) == 33 and st.state.endswith("…") and len(st.attributes["telegramm"]) > 255
     await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -93,5 +93,38 @@ async def test_raw_sensor_restored(hass: HomeAssistant, mods):
     assert await hass.config_entries.async_setup(entry.entry_id)
     await _settle(hass, 0.6)
     st = hass.states.get(eid)
-    assert st is not None and st.state == WARM and st.attributes["rssi"] == -70.5
+    assert st is not None and st.state == WARM[:32] + "…" and st.attributes["rssi"] == -70.5
+    assert st.attributes["telegramm"] == WARM and "line" not in st.attributes   # Altzustand übernommen
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_all_meter_entities_named_and_filled(hass: HomeAssistant, mods):
+    """Alle Zählergeräte: jede Entität (auch standardmäßig deaktivierte) hat einen eigenen Namen,
+    ist nicht nach dem Gerät benannt, und Zeitstempel/Datum sind nach einem Telegramm gefüllt."""
+    hass.config.language = "de"
+    entry = _entry(hass, mods, meters=("52144701", "16660259"))
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await _settle(hass, 0.6)
+    await mods["1"].send(WARM)
+    await mods["1"].send(RELAYED_HCA)
+    await _settle(hass, 0.6)
+    reg = er.async_get(hass)
+    for ent in er.async_entries_for_config_entry(reg, entry.entry_id):
+        if ent.disabled_by:
+            reg.async_update_entity(ent.entity_id, disabled_by=None)
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await _settle(hass, 0.6)
+    await mods["1"].send(WARM)
+    await mods["1"].send(RELAYED_HCA)
+    await _settle(hass, 0.6)
+    dev_reg = dr.async_get(hass)
+    meter_ents = [e for e in er.async_entries_for_config_entry(reg, entry.entry_id) if "_meter_" in e.unique_id]
+    assert len(meter_ents) >= 14
+    for ent in meter_ents:
+        dev = dev_reg.async_get(ent.device_id)
+        st = hass.states.get(ent.entity_id)
+        assert ent.original_name, ent.entity_id
+        assert st.attributes["friendly_name"] != (dev.name_by_user or dev.name), ent.entity_id
+        assert st.state not in ("unknown", "unavailable"), (ent.entity_id, st.state)
+        assert len(st.state) <= 33, ent.entity_id                   # nichts läuft über den Rand
     await hass.config_entries.async_unload(entry.entry_id)

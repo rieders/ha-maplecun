@@ -50,11 +50,11 @@ async def test_raw_sensors_named_and_long_lines(hass: HomeAssistant, mods):
     await mods["1"].send(line)
     await _settle(hass)
     st = hass.states.get("sensor.maplecun_test_raw_data_module_1")
-    assert len(line) > 255 and st.state == line[:255] and st.attributes["line"] == line
+    assert len(line) > 255 and st.state == line[:32] + "…" and st.attributes["line"] == line
     await mods["1"].send(WARM)
     await _settle(hass)
-    assert hass.states.get("sensor.maplecun_test_raw_data_module_1").state == WARM
-    # 433 MHz: weiterhin nur nicht ausgewertete Zeilen
+    assert hass.states.get("sensor.maplecun_test_raw_data_module_1").state == WARM[:32] + "…"
+    # 433 MHz: jede Zeile (seit 0.9.4 auch ausgewertete)
     await mods["2"].send("unbekannte Zeile")
     await _settle(hass)
     assert hass.states.get("sensor.maplecun_test_raw_data_module_2").state == "unbekannte Zeile"

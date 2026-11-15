@@ -125,7 +125,7 @@ async def test_import_real_line_sets_state(hass: HomeAssistant, setup, tmp_path,
     assert r["zaehler"][0]["zustand"] == "gesetzt"
     # Rohzeile über denselben Weg wie beim Live-Empfang (hub.deliver)
     raw = hass.states.get("sensor.wasser_52143909_last_telegram_raw")
-    assert raw.state.startswith("b4BC465B2769") and raw.attributes["line"].endswith("9FE880")
+    assert raw.state.startswith("b4BC465B2769") and raw.attributes["telegramm"].endswith("9FE880")
     assert raw.attributes["netzwerkknoten"] is True and raw.attributes["lqi"] == 0x80
     assert raw.attributes["rssi"] == -78.5 and raw.attributes["inneres_telegramm"]
     assert raw.attributes["empfangen"].startswith("2026-11-12T07:40:35")
