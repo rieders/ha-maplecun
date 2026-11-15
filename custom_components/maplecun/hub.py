@@ -54,6 +54,7 @@ from .const import (
     INFO_SLOW_INTERVAL,
     IT_REINIT_DELAY,
     IT_ECHO_TIMEOUT,
+    IT_PHANTOM_WINDOW,
     IT_MODULE_AUTO,
     CONF_IT_MODULE,
     STARTUP_SLOWRF_WAIT,
@@ -199,6 +200,7 @@ class MapleCunHub:
         self._owner_known = asyncio.Event()      # wMBus-Modul hat V/? beantwortet (Start)
         self._it_reinit: dict[str, asyncio.Task] = {}
         self._it_hint: set[str] = set()          # Hinweis "falsche Endung" je Code nur einmal
+        self._it_last: dict[str, tuple[str, float]] = {}   # Modul -> (letzter gültiger Code, monotonic)
 
     # ------------------------------------------------------------------ Lebenszyklus
     async def async_start(self) -> None:
@@ -1051,7 +1053,8 @@ class MapleCunHub:
                 self._handle_revolt(line)
                 return
             if (it := intertechno.decode(line)) is not None:
-                self._handle_it(*it)
+                if not self._it_phantom(mod, *it):
+                    self._handle_it(*it)
                 return
             if (reading := climate433.decode(line)) is not None:
                 self._handle_climate(reading)
@@ -1226,6 +1229,27 @@ class MapleCunHub:
         async_dispatcher_send(self.hass, signal_revolt(self.entry_id, rid), values)
 
     # --- Intertechno (Fernbedienung / Wandschalter gedrückt)
+    @callback
+    def _it_phantom(self, mod: Module, code: str, cmd: str) -> bool:
+        """Verstümmeltes Paketende verwerfen.
+
+        Am Gerät gemessen (2026-11-15): nach 7 von 10 Tastendrücken "Stehlampe EIN" (i550551…)
+        folgte innerhalb von ~0,5 s eine Zeile i55155F… = Code FFFF0FFFFF, Befehl 11 – das
+        abgeschnittene Ende der Wiederholungen. Eine Zeile mit anderem Code, die kurz nach
+        einem gültigen Code auf demselben Modul kommt und weder Ein- noch Aus-Befehl eines
+        eingerichteten Geräts ist, wird deshalb nicht ausgewertet (auch nicht als "gefunden").
+        """
+        now = time.monotonic()
+        dev = self.entry.options.get(CONF_IT_DEVICES, {}).get(code)
+        known = dev is not None and cmd in (dev.get(CONF_ON), dev.get(CONF_OFF))
+        last = self._it_last.get(mod.module_id)
+        if not known and last is not None and last[0] != code and now - last[1] < IT_PHANTOM_WINDOW:
+            _LOGGER.debug("Modul %s: Intertechno %s/%s kurz nach %s verworfen (Paketende)",
+                          mod.module_id, code, cmd, last[0])
+            return True
+        self._it_last[mod.module_id] = (code, now)
+        return False
+
     @callback
     def _handle_it(self, code: str, cmd: str) -> None:
         if code in self.it_codes:

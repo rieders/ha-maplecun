@@ -93,6 +93,7 @@ WATCHDOG_SILENCE_SLOWRF = 15 * 60  # SlowRF-Modul (433 MHz) ohne jede Zeile -> n
 WATCHDOG_CHECK = 5 * 60     # Prüfintervall
 STARTUP_SLOWRF_WAIT = 15    # wMBus wartet beim Start höchstens so lange auf die SlowRF-Module (s)
 IT_ECHO_TIMEOUT = 3.0       # a-culfw wiederholt "is…" nach dem Senden (intertechno.c); FHEM wartet 3 s
+IT_PHANTOM_WINDOW = 1.5     # verstümmeltes Paketende nach einem Intertechno-Code (s)
 IT_REINIT_DELAY = 1.0       # nach einem Intertechno-Sendebefehl (Senden dauert einige 100 ms)
 INFO_SLOW_INTERVAL = 15 * 60  # credit10ms und Laufzeit höchstens alle 15 min lesen
 STORAGE_VERSION = 1

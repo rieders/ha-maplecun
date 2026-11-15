@@ -280,3 +280,39 @@ def test_adopt_uses_received_on_suffix():
     from custom_components.maplecun.hub import it_cmds_from_seen
     assert it_cmds_from_seen({"cmd": "F0", "cmds": ["0F", "F0"]}) == {"on": "0F", "off": "F0"}
     assert it_cmds_from_seen({"cmd": "FF"}) == {"on": "FF", "off": "F0"}
+
+
+# Echte Zeilen der Fernbedienung (Taste A = Stehlampe, neue Batterie, X21), 2026-11-15
+REMOTE_ON = ["i55055118", "i55155F19"]           # EIN, ~0,5 s später das abgeschnittene Paketende
+REMOTE_OFF = ["i55055416"]                       # AUS (aufgezeichnet mit X27)
+
+
+async def test_remote_sets_state_without_sending_and_drops_phantom(hass: HomeAssistant, mods, firmware):
+    """Statusrückmeldung: empfangener Code setzt den Schalter, ohne zu senden; das
+    verstümmelte Paketende (FFFF0FFFFF/11) wird weder ausgewertet noch als Gerät gemeldet."""
+    entry = await _setup(hass, mods, it_devices=STEHLAMPE)
+    hub = entry.runtime_data
+    start = len(firmware.sent)
+    assert hass.states.get("switch.stehlampe").state == "off"
+    for line in REMOTE_ON:
+        await _radio(firmware, mods["2"], line)
+    await _settle(hass)
+    assert hass.states.get("switch.stehlampe").state == "on"
+    assert not hub.discovered                          # kein Phantom-Gerät FFFF0FFFFF
+    await asyncio.sleep(1.6)                           # außerhalb des Fensters
+    for line in REMOTE_OFF:
+        await _radio(firmware, mods["2"], line)
+    await _settle(hass)
+    assert hass.states.get("switch.stehlampe").state == "off"
+    assert not [c for _, c in firmware.sent[start:] if c.startswith("is")]   # nichts gesendet
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_unknown_code_alone_is_still_discovered(hass: HomeAssistant, mods, firmware):
+    """Der Filter greift nur direkt nach einem anderen Code – ein einzeln empfangener
+    fremder Code erscheint weiterhin unter "Gefundene Geräte"."""
+    entry = await _setup(hass, mods, it_devices=STEHLAMPE)
+    await _radio(firmware, mods["2"], "i55155F19")
+    await _settle(hass)
+    assert "it:FFFF0FFFFF" in entry.runtime_data.discovered
+    await hass.config_entries.async_unload(entry.entry_id)
