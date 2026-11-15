@@ -316,3 +316,17 @@ async def test_unknown_code_alone_is_still_discovered(hass: HomeAssistant, mods,
     await _settle(hass)
     assert "it:FFFF0FFFFF" in entry.runtime_data.discovered
     await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_raw_sensor_shows_evaluated_lines(hass: HomeAssistant, mods, firmware):
+    """"Rohdaten Modul 2" zeigt auch ausgewertete Zeilen (hier den Code der Fernbedienung)."""
+    from homeassistant.helpers import entity_registry as er
+    entry = await _setup(hass, mods, it_devices=STEHLAMPE)
+    er.async_get(hass).async_update_entity("sensor.maplecun_test_raw_data_module_2", disabled_by=None)
+    await hass.config_entries.async_reload(entry.entry_id)
+    await _settle(hass, 0.8)
+    await _radio(firmware, mods["2"], REMOTE_ON[0])
+    await _settle(hass)
+    assert hass.states.get("sensor.maplecun_test_raw_data_module_2").state == REMOTE_ON[0]
+    assert hass.states.get("switch.stehlampe").state == "on"
+    await hass.config_entries.async_unload(entry.entry_id)

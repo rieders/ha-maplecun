@@ -1043,9 +1043,11 @@ class MapleCunHub:
     # ------------------------------------------------------------------ Empfang
     @callback
     def _handle_line(self, mod: Module, line: str) -> None:
+        # "Rohdaten Modul N" (standardmäßig aus) zeigt JEDE empfangene Zeile, auch ausgewertete
+        # (i… Intertechno, s… Thermometer, r… Revolt, b… wMBus) – bis 0.9.3 nur die nicht
+        # ausgewerteten, ein leerer Sensor sah dann wie ein tauber Empfänger aus.
+        async_dispatcher_send(self.hass, signal_raw(self.entry_id, mod.module_id), line)
         if mod.role in WMBUS_ROLES and line.startswith("b"):
-            # Rohdaten-Sensor (standardmäßig aus) zeigt bei wMBus jede Telegrammzeile
-            async_dispatcher_send(self.hass, signal_raw(self.entry_id, mod.module_id), line)
             self._handle_wmbus(mod, line)
             return
         if mod.role == ROLE_RF433:
@@ -1063,9 +1065,6 @@ class MapleCunHub:
             if mod.role in WMBUS_ROLES:
                 self._unsolicited_mode(mod, line)
             return
-        if line.startswith("V "):
-            return
-        async_dispatcher_send(self.hass, signal_raw(self.entry_id, mod.module_id), line)
 
     # --- Wireless M-Bus
     @callback
