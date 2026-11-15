@@ -9,8 +9,8 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MapleCunConfigEntry
-from .const import DOMAIN
-from .devices import remove_orphans
+from .const import DOMAIN, ROLE_RF433
+from .devices import remote_device, remove_orphans
 from .naming import with_fallback_name
 
 
@@ -22,6 +22,8 @@ async def async_setup_entry(
     hub = entry.runtime_data
     entities: list[ButtonEntity] = [RefreshButton(entry)]
     entities.extend(ReopenButton(entry, mid) for mid in sorted(hub.modules))
+    if hub.module_for_role(ROLE_RF433):
+        entities.extend(RemoteBatteryReplaced(entry, house) for house in sorted(hub.remote_houses()))
     remove_orphans(hass, entry, "button", {e.unique_id for e in entities})
     async_add_entities(entities)
 
@@ -66,3 +68,20 @@ class ReopenButton(_Base):
 
     async def async_press(self) -> None:
         await self._hub.async_reopen(self._mid)
+
+
+class RemoteBatteryReplaced(_Base):
+    """Batterie der Fernbedienung getauscht: Referenz und Verlauf neu beginnen."""
+
+    _attr_translation_key = "remote_battery_replaced"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, entry, house: str) -> None:
+        super().__init__(entry)
+        self._house = house
+        self._attr_unique_id = f"{entry.entry_id}_remote_{house}_battery_replaced"
+        self._attr_device_info = remote_device(entry, house)
+        with_fallback_name(self, "button", ButtonEntityDescription)
+
+    async def async_press(self) -> None:
+        await self._hub.async_reset_remote(self._house)

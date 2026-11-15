@@ -16,7 +16,7 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from . import climate433, culcmd, intertechno, revolt, wmbus
+from . import remote as remote_mod, climate433, culcmd, intertechno, revolt, wmbus
 from .const import (
     CONF_AUTO,
     CONF_INIT,
@@ -55,6 +55,9 @@ from .const import (
     IT_REINIT_DELAY,
     IT_ECHO_TIMEOUT,
     IT_PHANTOM_WINDOW,
+    IT_PRESS_GAP,
+    IT_ECHO_GUARD,
+    CONF_IT_BATTERY_DB,
     IT_MODULE_AUTO,
     CONF_IT_MODULE,
     STARTUP_SLOWRF_WAIT,
@@ -74,6 +77,7 @@ from .const import (
     WATCHDOG_SILENCE,
     WMBUS_ROLES,
     signal_climate,
+    signal_it_press,
     signal_connection,
     signal_discovered,
     signal_it,
@@ -201,6 +205,13 @@ class MapleCunHub:
         self._it_reinit: dict[str, asyncio.Task] = {}
         self._it_hint: set[str] = set()          # Hinweis "falsche Endung" je Code nur einmal
         self._it_last: dict[str, tuple[str, float]] = {}   # Modul -> (letzter gültiger Code, monotonic)
+        # Batterie-Frühwarnung (remote.py): je Hauscode eingerichteter Geräte; je Code der letzte
+        # Tastendruck (gespeichert). Eigene Sendungen werden nicht gezählt (Echo auf Modul 2).
+        self.it_battery_db: float = float(opts.get(CONF_IT_BATTERY_DB, remote_mod.DEFAULT_THRESHOLD_DB))
+        self.remotes: dict[str, remote_mod.RemoteStats] = {}
+        self.it_presses: dict[str, dict] = {}            # Code -> {"rssi": dBm, "time": ISO}
+        self._it_press_at: dict[str, float] = {}         # Code -> monotonic (ein Druck = mehrere Zeilen)
+        self._it_tx_until: dict[str, float] = {}         # Code -> monotonic: Echo eigener Sendung
 
     # ------------------------------------------------------------------ Lebenszyklus
     async def async_start(self) -> None:
@@ -214,6 +225,10 @@ class MapleCunHub:
             k: v for k, v in data.get("discovered", {}).items()
             if k not in self.ignored and not self.is_configured(k) and not k.startswith(f"{KIND_METER}:")
         }
+        houses = self.remote_houses()
+        self.remotes = {h: remote_mod.RemoteStats.from_dict(v) for h, v in data.get("remotes", {}).items()
+                        if h in houses}
+        self.it_presses = {c: dict(v) for c, v in data.get("it_presses", {}).items() if c in self.it_codes}
         # Firmware-Befunde: "Rolle nicht unterstützt" gilt nur für dieselbe Rolle und Firmware
         self._modes = {k: dict(v) for k, v in data.get("modes", {}).items()}
         for mid, mod in self.modules.items():
@@ -261,6 +276,8 @@ class MapleCunHub:
             "discovered": self.discovered,
             "ignored": sorted(self.ignored),
             "modes": self._modes,
+            "remotes": {h: st.to_dict() for h, st in self.remotes.items()},
+            "it_presses": self.it_presses,
         }
 
     def _save_later(self, delay: float = 10) -> None:
@@ -738,8 +755,12 @@ class MapleCunHub:
         if mod is None:
             raise ConnectionError("Kein Modul für Intertechno eingerichtet")
         # Nicht mitten in eine Initialisierung (brx/X21/brs) hinein senden
+        code = command[2:12]
+        # Modul 2 empfängt die eigene Sendung (Echo) – nicht als Tastendruck zählen
+        self._it_tx_until[code] = time.monotonic() + IT_ECHO_TIMEOUT + IT_ECHO_GUARD
         async with self._radio_lock:
             echo = await self.async_request(module_id, command, rf"^{re.escape(command)}$", IT_ECHO_TIMEOUT)
+        self._it_tx_until[code] = time.monotonic() + IT_ECHO_GUARD
         if echo is None:
             _LOGGER.warning("Modul %s: keine Bestätigung der Firmware für %s", module_id, command)
         else:
@@ -1056,7 +1077,7 @@ class MapleCunHub:
                 return
             if (it := intertechno.decode(line)) is not None:
                 if not self._it_phantom(mod, *it):
-                    self._handle_it(*it)
+                    self._handle_it(*it, rssi=intertechno.rssi_byte(line))
                 return
             if (reading := climate433.decode(line)) is not None:
                 self._handle_climate(reading)
@@ -1245,13 +1266,57 @@ class MapleCunHub:
         if not known and last is not None and last[0] != code and now - last[1] < IT_PHANTOM_WINDOW:
             _LOGGER.debug("Modul %s: Intertechno %s/%s kurz nach %s verworfen (Paketende)",
                           mod.module_id, code, cmd, last[0])
+            self._note_garbled(last[0])
             return True
         self._it_last[mod.module_id] = (code, now)
         return False
 
+    # --- Batterie-Frühwarnung Fernbedienung
+    def remote_houses(self) -> set[str]:
+        """Hauscodes (Fernbedienungen) der eingerichteten Intertechno-Geräte."""
+        return {remote_mod.house_code(c) for c in self.it_codes}
+
+    def remote_stats(self, house: str) -> remote_mod.RemoteStats:
+        return self.remotes.setdefault(house, remote_mod.RemoteStats())
+
     @callback
-    def _handle_it(self, code: str, cmd: str) -> None:
+    def _note_press(self, code: str, rssi: int | None) -> None:
+        """Tastendruck eines eingerichteten Codes verbuchen (nicht das Echo eigener Sendungen)."""
+        now = time.monotonic()
+        if now < self._it_tx_until.get(code, 0):
+            return
+        last = self._it_press_at.get(code)
+        self._it_press_at[code] = now
+        if last is not None and now - last < IT_PRESS_GAP:
+            return                                   # derselbe Tastendruck, weitere Zeile
+        dbm = remote_mod.rssi_dbm(rssi) if rssi is not None else None
+        self.it_presses[code] = {"rssi": dbm, "time": dt_util.utcnow().isoformat()}
+        if dbm is not None:
+            self.remote_stats(remote_mod.house_code(code)).add_press(dbm)
+        self._save_later(30)
+        async_dispatcher_send(self.hass, signal_it_press(self.entry_id))
+
+    @callback
+    def _note_garbled(self, code: str) -> None:
+        """Nach dem letzten Tastendruck dieses Codes kam ein verstümmeltes Paketende."""
+        if code not in self.it_codes or time.monotonic() < self._it_tx_until.get(code, 0):
+            return
+        house = remote_mod.house_code(code)
+        if house in self.remotes:
+            self.remotes[house].mark_garbled()
+            async_dispatcher_send(self.hass, signal_it_press(self.entry_id))
+
+    async def async_reset_remote(self, house: str) -> None:
+        """Button "Batterie getauscht": Referenz und Verlauf dieser Fernbedienung neu beginnen."""
+        self.remote_stats(house).reset()
+        _LOGGER.info("Fernbedienung %s: Batterie getauscht – Referenz zurückgesetzt", house)
+        self._save_later(1)
+        async_dispatcher_send(self.hass, signal_it_press(self.entry_id))
+
+    @callback
+    def _handle_it(self, code: str, cmd: str, rssi: int | None = None) -> None:
         if code in self.it_codes:
+            self._note_press(code, rssi)
             dev = self.entry.options.get(CONF_IT_DEVICES, {}).get(code, {})
             if cmd not in (dev.get(CONF_ON), dev.get(CONF_OFF)) and code not in self._it_hint:
                 # z. B. Elro/PT2262: Ein = 0F, eingetragen ist aber die Vorgabe FF

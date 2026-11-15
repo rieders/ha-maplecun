@@ -40,7 +40,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
 from . import MapleCunConfigEntry
-from .devices import via_hub
+from .devices import it_device, via_hub
 from .naming import with_fallback_name
 from .const import (
     CONFLICT_WMBUS,
@@ -49,6 +49,7 @@ from .const import (
     CONF_NAME,
     CONF_REVOLTS,
     CONF_SENSORS,
+    CONF_IT_DEVICES,
     DOMAIN,
     HEARD_LIST_MAX,
     MODULE_IDS,
@@ -57,6 +58,7 @@ from .const import (
     WMBUS_ROLES,
     signal_climate,
     signal_connection,
+    signal_it_press,
     signal_meter,
     signal_meter_new,
     signal_meter_raw,
@@ -286,6 +288,11 @@ async def async_setup_entry(
             name = revolt_cfg.get(rid, {}).get(CONF_NAME) or f"Revolt {rid}"
             entities.extend(RevoltSensor(entry, rf_module.module_id, rid, name, d) for d in REVOLT_SENSORS)
 
+    # --- Intertechno: Signalstärke und letzter Tastendruck je Taste (Batterie-Frühwarnung)
+    if rf_module:
+        for code, dev in entry.options.get(CONF_IT_DEVICES, {}).items():
+            entities += [ITRssiSensor(entry, code, dev), ITLastPressSensor(entry, code, dev)]
+
     # --- Empfangsstatistik je Modul
     for mid in sorted(hub.modules):
         entities.append(LastRxSensor(entry, mid))
@@ -357,6 +364,7 @@ def _expected_sensor_ids(entry, hub, wmbus: bool) -> set[str]:
                 if not (k == "info_uptime" and mod.cmds and "t" not in mod.cmds)}
     if hub.module_for_role(ROLE_RF433):
         ids |= {f"{e}_revolt_{rid}_{d.key}" for rid in hub.revolts for d in REVOLT_SENSORS}
+        ids |= {f"{e}_it_{code}_{k}" for code in hub.it_codes for k in ("rssi", "last_press")}
         for key, cfg in entry.options.get(CONF_SENSORS, {}).items():
             ids |= {f"{e}_climate_{key}_{d.key}" for d in climate_descriptions(cfg.get(CONF_MODEL, ""))}
     if wmbus:
@@ -925,3 +933,66 @@ class ModuleInfoSensor(_Base):
         self.async_on_remove(
             async_dispatcher_connect(self.hass, signal_module_info(self._entry.entry_id), self.async_write_ha_state)
         )
+
+
+# ======================================================================= Intertechno-Fernbedienung
+class _ITPressBase(_Base):
+    """Diagnose je Intertechno-Taste: nur echte Tastendrücke (nicht das Echo eigener Sendungen).
+
+    Werte kommen aus dem Speicher der Integration (bleiben über Neustarts erhalten).
+    """
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, entry, code: str, dev: dict, key: str) -> None:
+        super().__init__(entry, None)
+        self._code = code
+        self._attr_unique_id = f"{entry.entry_id}_it_{code}_{key}"
+        self._attr_device_info = it_device(entry, code, dev)
+
+    @property
+    def available(self) -> bool:
+        return True                     # Wert bleibt auch ohne Verbindung gültig
+
+    @property
+    def _press(self) -> dict:
+        return self._hub.it_presses.get(self._code, {})
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_dispatcher_connect(self.hass, signal_it_press(self._entry.entry_id), self.async_write_ha_state)
+        )
+
+
+class ITRssiSensor(_ITPressBase):
+    """Signalstärke des letzten Tastendrucks (RSSI-Byte der i-Zeile, X21)."""
+
+    _attr_translation_key = "it_rssi"
+    _attr_device_class = SensorDeviceClass.SIGNAL_STRENGTH
+    _attr_native_unit_of_measurement = SIGNAL_STRENGTH_DECIBELS_MILLIWATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, entry, code: str, dev: dict) -> None:
+        super().__init__(entry, code, dev, "rssi")
+        with_fallback_name(self, "sensor", SensorEntityDescription)
+
+    @property
+    def native_value(self) -> float | None:
+        return self._press.get("rssi")
+
+
+class ITLastPressSensor(_ITPressBase):
+    """Zeitpunkt des letzten Tastendrucks auf der Fernbedienung (oder am Wandschalter)."""
+
+    _attr_translation_key = "it_last_press"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, entry, code: str, dev: dict) -> None:
+        super().__init__(entry, code, dev, "last_press")
+        with_fallback_name(self, "sensor", SensorEntityDescription)
+
+    @property
+    def native_value(self) -> datetime | None:
+        value = self._press.get("time")
+        return dt_util.parse_datetime(value) if value else None

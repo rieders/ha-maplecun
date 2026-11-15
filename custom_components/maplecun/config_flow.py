@@ -15,12 +15,16 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.selector import (
     FileSelector,
     FileSelectorConfig,
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
     SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
 )
 
+from .remote import DEFAULT_THRESHOLD_DB
 from .const import (
     CONF_AUTO,
     CONF_CODE,
@@ -28,6 +32,7 @@ from .const import (
     CONF_IT_CODES,
     CONF_IT_DEVICES,
     CONF_IT_MODULE,
+    CONF_IT_BATTERY_DB,
     IT_MODULE_AUTO,
     CONF_KEY,
     CONF_LOG_UNKNOWN,
@@ -280,6 +285,7 @@ class MapleCunOptionsFlow(OptionsFlow):
                 },
                 CONF_LOG_UNKNOWN: user_input.get(CONF_LOG_UNKNOWN, False),
                 CONF_IT_MODULE: user_input.get(CONF_IT_MODULE, IT_MODULE_AUTO),
+                CONF_IT_BATTERY_DB: float(user_input.get(CONF_IT_BATTERY_DB, DEFAULT_THRESHOLD_DB)),
             })
         hub = self._hub()
         it_choices = [IT_MODULE_AUTO] + (hub.it_module_choices() if hub else [])
@@ -296,6 +302,11 @@ class MapleCunOptionsFlow(OptionsFlow):
                 ): bool,
                 vol.Optional(CONF_IT_MODULE, default=it_current): SelectSelector(SelectSelectorConfig(
                     options=it_choices, translation_key="it_module", mode=SelectSelectorMode.DROPDOWN)),
+                vol.Optional(
+                    CONF_IT_BATTERY_DB,
+                    default=self.config_entry.options.get(CONF_IT_BATTERY_DB, DEFAULT_THRESHOLD_DB),
+                ): NumberSelector(NumberSelectorConfig(min=3, max=40, step=1, unit_of_measurement="dB",
+                                                       mode=NumberSelectorMode.BOX)),
                 vol.Optional("reset_ignored", default=False): bool,
             }
         )

@@ -24,6 +24,12 @@ def decode(line: str) -> tuple[str, str] | None:
     return tri[:10], tri[10:]
 
 
+def rssi_byte(line: str) -> int | None:
+    """Mit X21 angehängtes RSSI-Byte einer 'i…'-Zeile (oder None)."""
+    m = _IT_RE.match(line)
+    return int(m.group(2), 16) if m and m.group(2) else None
+
+
 def encode(code: str, cmd: str) -> str:
     """Gegenstück zu decode() (für Tests)."""
     rev = {v: k for k, v in _PAIR.items()}

@@ -9,13 +9,12 @@ from homeassistant.const import STATE_ON
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import MapleCunConfigEntry
-from .devices import via_hub
+from .devices import it_device
 from .const import CONF_IT_DEVICES, CONF_NAME, CONF_OFF, CONF_ON, DOMAIN, signal_connection, signal_it
 
 
@@ -57,13 +56,7 @@ class IntertechnoSwitch(SwitchEntity, RestoreEntity):
         self._off = dev[CONF_OFF]
         self._attr_unique_id = f"{entry.entry_id}_it_{code}"
         self._attr_is_on = False
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"{entry.entry_id}_it_{code}")},
-            name=dev.get(CONF_NAME) or f"Intertechno {code}",
-            manufacturer="Intertechno",
-            model=f"Tristate {code}",
-            **via_hub(entry),
-        )
+        self._attr_device_info = it_device(entry, code, dev)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

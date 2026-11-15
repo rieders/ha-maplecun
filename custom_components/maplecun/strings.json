@@ -132,11 +132,13 @@
           "reset_ignored": "Show ignored devices again",
           "auto_sensor": "433 MHz thermometers (careful: neighbours' too)",
           "log_unknown_meters": "Write unknown wireless M-Bus meters to the log (ID, type, RSSI only)",
-          "it_module": "Send Intertechno via"
+          "it_module": "Send Intertechno via",
+          "it_battery_db": "Remote battery warning: drop below reference"
         },
         "data_description": {
           "log_unknown_meters": "Diagnostics for finding your own meter IDs. Nothing is stored. Off by default.",
-          "it_module": "Automatic: the wMBus module as in FHEM (433 MHz reception and wMBus keep running), otherwise the 433 MHz module. Sending via the 433 MHz module requires re-initialising reception after each send (wMBus briefly off)."
+          "it_module": "Automatic: the wMBus module as in FHEM (433 MHz reception and wMBus keep running), otherwise the 433 MHz module. Sending via the 433 MHz module requires re-initialising reception after each send (wMBus briefly off).",
+          "it_battery_db": "The battery counts as low when the median signal strength of the last 20 key presses is at least this many dB below the best median so far. Default 10 dB."
         }
       },
       "edit_meter": {
@@ -214,6 +216,9 @@
     "binary_sensor": {
       "module": {
         "name": "Module {module}"
+      },
+      "remote_battery": {
+        "name": "Remote battery low"
       }
     },
     "sensor": {
@@ -342,6 +347,12 @@
       },
       "module_sens": {
         "name": "Sensitivity module {module}"
+      },
+      "it_rssi": {
+        "name": "Remote signal strength"
+      },
+      "it_last_press": {
+        "name": "Last key press"
       }
     },
     "button": {
@@ -350,6 +361,9 @@
       },
       "reopen": {
         "name": "Module {module} reconnect"
+      },
+      "remote_battery_replaced": {
+        "name": "Battery replaced"
       }
     },
     "number": {

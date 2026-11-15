@@ -303,6 +303,14 @@ Codes aus FHEM: `list TYPE=IT DEF` → z. B. `FFFF00FFFF 0F F0` = Code, Ein, Aus
 
 **Sendemodul** (Konfigurieren → Einstellungen → „Intertechno senden über“): Vorgabe *Automatisch* sendet wie FHEM (IODev = wMBus-Modul) über das Wireless-M-Bus-Modul. a-culfw (`intertechno.c`, `change_RF_mode`/`restore_RF_mode`) stellt dort nach dem Senden den wMBus-Modus selbst wieder her, das 433-MHz-Modul wird nicht angefasst und empfängt weiter. Am Gerät gemessen (2026-11-15, Modul 3 im S-Modus): Stehlampe 30/30, Modellbahn 6/6, Modul 2 empfing währenddessen jedes Signal, wMBus-Telegramme kamen weiter. Wahlweise über das 433-MHz-Modul – dann initialisiert die Integration es danach neu (wMBus kurz aus), weil `set_txrestore` bei aktivem wMBus nichts tut. Module mit Rolle „Aus“ werden nie angeboten: `restore_RF_mode` → `set_RF_mode(off)` setzt `mbus_mode = WMBUS_NONE` und beendet den wMBus-Empfang auf allen Modulen.
 
+**Batterie-Frühwarnung Fernbedienung.** Die Handfernbedienungen melden keinen Batteriestand. Mit schwacher Batterie kamen am Gerät nur noch verstümmelte Pakete an (7 von 20 Tastendrücken), mit neuer Batterie 10 von 10 bei etwa −62 dBm. Daraus leitet die Integration eine Frühwarnung ab:
+
+* Je eingerichteter Steckdose die Diagnosesensoren **„Signalstärke Fernbedienung“** (dBm, aus dem RSSI-Byte der `i…`-Zeile) und **„Letzter Tastendruck“**. Gezählt wird nur der Empfang von der Fernbedienung bzw. dem Wandschalter – das Echo eigener Sendungen (Modul 3 sendet, Modul 2 empfängt) nicht. Mehrere Zeilen innerhalb einer Sekunde gelten als ein Tastendruck.
+* Je **Fernbedienung** (Hauscode = erste 5 Tristate-Stellen, z. B. `FFFF0` für die Tasten A–D) ein Gerät „Fernbedienung FFFF0“ mit **„Batterie Fernbedienung schwach“** (Batterie-Sensor): ein, wenn der Median der Signalstärke der letzten 20 Tastendrücke mindestens 10 dB (Konfigurieren → Einstellungen) unter dem besten bisher erreichten Median liegt; ausgewertet erst ab 10 Tastendrücken (vorher „unbekannt“). Attribute: `median_dbm`, `referenz_dbm`, `tastendruecke`, `verstuemmelt_anteil` (Anteil der Drücke, nach denen ein verstümmeltes Paketende verworfen wurde – zweites Anzeichen, löst allein nicht aus), `schwelle_db`.
+* Button **„Batterie getauscht“** setzt Referenz und Verlauf zurück. Der Verlauf bleibt über Neustarts erhalten.
+
+**Rohdaten Modul N** (Diagnose, standardmäßig aus) zeigt seit 0.9.4 jede empfangene Zeile, auch die ausgewerteten (`i…`, `s…`, `r…`, `b…`).
+
 ## Technisches
 
 * a-culfw liefert Wireless-M-Bus-Telegramme als `b…` (Rahmen A, mit Block-CRCs) bzw. `bY…` (Rahmen B, auch über zwei CRC-Blöcke) plus LQI- und RSSI-Byte (mit `X21`; im FHEM-Log fehlt das RSSI-Byte); alle CRCs werden geprüft (CRC-16/EN-13757), Telegramme mit CRC-Fehler verworfen

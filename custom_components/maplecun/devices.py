@@ -26,6 +26,28 @@ def via_hub(entry) -> dict:
     return {"via_device_id": device_id} if device_id else {}
 
 
+def it_device(entry, code: str, dev: dict) -> DeviceInfo:
+    """Gerät einer Intertechno-Steckdose (Schalter, Signalstärke, letzter Tastendruck)."""
+    return DeviceInfo(
+        identifiers={(DOMAIN, f"{entry.entry_id}_it_{code}")},
+        name=dev.get("name") or f"Intertechno {code}",
+        manufacturer="Intertechno",
+        model=f"Tristate {code}",
+        **via_hub(entry),
+    )
+
+
+def remote_device(entry, house: str) -> DeviceInfo:
+    """Gerät einer Fernbedienung (Hauscode): Batterie-Frühwarnung."""
+    return DeviceInfo(
+        identifiers={(DOMAIN, f"{entry.entry_id}_remote_{house}")},
+        name=f"Fernbedienung {house}",
+        manufacturer="Intertechno",
+        model=f"Hauscode {house}",
+        **via_hub(entry),
+    )
+
+
 _LOGGER = logging.getLogger(__name__)
 
 

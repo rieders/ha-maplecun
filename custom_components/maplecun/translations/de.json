@@ -132,11 +132,13 @@
           "reset_ignored": "Ignorierte Geräte wieder anzeigen",
           "auto_sensor": "433-MHz-Thermometer (Vorsicht: auch die der Nachbarn)",
           "log_unknown_meters": "Unbekannte Wireless-M-Bus-Zähler ins Log schreiben (nur ID, Typ, RSSI)",
-          "it_module": "Intertechno senden über"
+          "it_module": "Intertechno senden über",
+          "it_battery_db": "Batterie-Frühwarnung Fernbedienung: Abstand zur Referenz"
         },
         "data_description": {
           "log_unknown_meters": "Diagnose, um die eigenen Zähler-IDs zu finden. Es wird nichts gespeichert. Standardmäßig aus.",
-          "it_module": "Automatisch: wMBus-Modul wie in FHEM (433-MHz-Empfang und wMBus laufen ungestört weiter), sonst 433-MHz-Modul. Über das 433-MHz-Modul muss die Integration den Empfang nach jedem Senden neu initialisieren (wMBus kurz aus)."
+          "it_module": "Automatisch: wMBus-Modul wie in FHEM (433-MHz-Empfang und wMBus laufen ungestört weiter), sonst 433-MHz-Modul. Über das 433-MHz-Modul muss die Integration den Empfang nach jedem Senden neu initialisieren (wMBus kurz aus).",
+          "it_battery_db": "Batterie gilt als schwach, wenn der Median der Signalstärke (letzte 20 Tastendrücke) mindestens so viele dB unter dem besten bisher erreichten Median liegt. Vorgabe 10 dB."
         }
       },
       "edit_meter": {
@@ -214,6 +216,9 @@
     "binary_sensor": {
       "module": {
         "name": "Modul {module}"
+      },
+      "remote_battery": {
+        "name": "Batterie Fernbedienung schwach"
       }
     },
     "sensor": {
@@ -342,6 +347,12 @@
       },
       "module_sens": {
         "name": "Empfindlichkeit Modul {module}"
+      },
+      "it_rssi": {
+        "name": "Signalstärke Fernbedienung"
+      },
+      "it_last_press": {
+        "name": "Letzter Tastendruck"
       }
     },
     "button": {
@@ -350,6 +361,9 @@
       },
       "reopen": {
         "name": "Modul {module} neu verbinden"
+      },
+      "remote_battery_replaced": {
+        "name": "Batterie getauscht"
       }
     },
     "number": {

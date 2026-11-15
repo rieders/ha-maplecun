@@ -16,6 +16,7 @@ CONF_SENSORS = "climate_sensors"
 CONF_MODEL = "model"
 CONF_AUTO = "auto_add"
 CONF_LOG_UNKNOWN = "log_unknown_meters"
+CONF_IT_BATTERY_DB = "it_battery_db"   # Batterie-Frühwarnung: Abstand zur Referenz (dB)
 CONF_METER_ID = "meter_id"
 CONF_KEY = "key"
 CONF_NAME = "name"
@@ -94,6 +95,8 @@ WATCHDOG_CHECK = 5 * 60     # Prüfintervall
 STARTUP_SLOWRF_WAIT = 15    # wMBus wartet beim Start höchstens so lange auf die SlowRF-Module (s)
 IT_ECHO_TIMEOUT = 3.0       # a-culfw wiederholt "is…" nach dem Senden (intertechno.c); FHEM wartet 3 s
 IT_PHANTOM_WINDOW = 1.5     # verstümmeltes Paketende nach einem Intertechno-Code (s)
+IT_PRESS_GAP = 1.0          # Zeilen desselben Codes innerhalb dieser Zeit = ein Tastendruck (s)
+IT_ECHO_GUARD = 1.5         # so lange nach der Bestätigung eigener Sendungen kein Tastendruck (s)
 IT_REINIT_DELAY = 1.0       # nach einem Intertechno-Sendebefehl (Senden dauert einige 100 ms)
 INFO_SLOW_INTERVAL = 15 * 60  # credit10ms und Laufzeit höchstens alle 15 min lesen
 STORAGE_VERSION = 1
@@ -138,6 +141,11 @@ def signal_seen(entry_id: str) -> str:
 
 def signal_it(entry_id: str, code: str) -> str:
     return f"{DOMAIN}_{entry_id}_it_{code}"
+
+
+def signal_it_press(entry_id: str) -> str:
+    """Tastendruck einer Fernbedienung (Signalstärke, Batterie-Frühwarnung)."""
+    return f"{DOMAIN}_{entry_id}_it_press"
 
 
 def signal_discovered(entry_id: str) -> str:
