@@ -127,21 +127,19 @@ Einstellungen (wie FHEM `set`), alle **standardmäßig deaktiviert** (Kategorie 
 
 | Entität | Befehl | Werte | Wo |
 |---|---|---|---|
-| Frequenz setzen | `W0F` `W10` `W11` | MHz, Schritt 0,001, im Band der aktuellen Frequenz | 433-MHz-Modul |
-| Bandbreite setzen | `W12` | 58 … 812 kHz (16 Stufen) | 433-MHz-Modul |
-| Verstärkung setzen | `W1D` | 24, 27, 30, 33, 36, 38, 40, 42 dB | 433-MHz-Modul |
-| Empfindlichkeit setzen | `W1F` | 4, 8, 12, 16 dB | 433-MHz-Modul |
-| Sendeleistung (PA-Tabelle) | `x00` … `x09` | −10 … 10 dBm, mit/ohne Rampe | nur Modul 1 im 433-MHz-Betrieb¹ |
-| Intertechno-Takt | `ic<µs>` | 100 … 1000 µs (FHEM-Vorgabe 250) | 433-MHz-Modul |
-| LED | `l00` / `l01` / `l02` | aus / an / blinken | Modul 1 |
+| Modul N Frequenz | `W0F` `W10` `W11` | MHz, Schritt 0,001, im Band der aktuellen Frequenz | 433-MHz-Modul |
+| Modul N Bandbreite | `W12` | 58 … 812 kHz (16 Stufen) | 433-MHz-Modul |
+| Modul N Verstärkung | `W1D` | 24, 27, 30, 33, 36, 38, 40, 42 dB | 433-MHz-Modul |
+| Modul N Empfindlichkeit | `W1F` | 4, 8, 12, 16 dB | 433-MHz-Modul |
 | Modul N neu verbinden (Button) | – | Verbindung neu aufbauen, Modul neu initialisieren | jedes Modul |
+
+Angezeigt wird jeweils der aus dem Modul gelesene Wert (`ccconf`). Sendeleistung (PA-Tabelle, `x00`…`x09`, nur Modul 1¹), LED (`l00`/`l01`/`l02`) und Intertechno-Takt (`ic<µs>`, nur RAM) meldet a-culfw nicht zurück – dafür gibt es seit 0.9.2 keine Entitäten mehr (sie blieben leer bzw. „nicht verfügbar“), gesetzt werden sie bei Bedarf mit der Aktion `maplecun.send_raw`. Module mit Rolle „Aus“ bekommen keine Einstellungen; Einträge entfallener oder abgeschalteter Entitäten entfernt die Integration beim Laden aus der Registry.
 
 * **Frequenz, Bandbreite, Verstärkung, Empfindlichkeit, PA-Tabelle und LED schreibt a-culfw dauerhaft ins EEPROM.** Geschrieben wird nur nach einer Aktion (Oberfläche, Skript, Automation), nie beim Start; Wiederherstellen nach einem Neustart zeigt nur den letzten Wert an.
 * Vor dem ersten Schreiben liest die Integration die aktuelle `ccconf` und schreibt sie ins Log (Stufe WARNING, „Sicherung vor dem Schreiben ins EEPROM“), danach jeden geschriebenen Befehl.
 * Neue Werte lädt die Firmware mit `X21`. Weil a-culfw das bei aktivem Wireless M-Bus überspringt (`set_txrestore`), schaltet die Integration wMBus dafür kurz aus (siehe [Reihenfolge](#reihenfolge-433-mhz-zuerst-wireless-m-bus-zuletzt)).
 * Module in einer Wireless-M-Bus-Rolle bekommen diese Entitäten nicht – die Firmware lädt dort eigene Funkeinstellungen.
 * ¹ a-culfw schreibt die PA-Tabelle immer in den EEPROM-Bereich von Modul 1 und lädt dessen Konfiguration in den Chip (`ccsetpa`); an anderen Modulen würde das die Einstellungen verbiegen.
-* `ITClock` bleibt nur im RAM des MapleCUN (bis zu dessen Neustart).
 * `hmPairForSec` und `hmPairSerial` (HomeMatic) gibt es nicht.
 
 **Aktion `maplecun.send_raw`** – beliebiges Kommando an ein Modul (FHEM `set raw`/`get raw`), die erste Antwortzeile kommt als Response zurück und steht zusätzlich im Sensor „Rohdaten Modul N“:
@@ -300,8 +298,10 @@ Gefundene Thermometer erscheinen unter *Gefundene Geräte* mit aktueller Tempera
 
 ### Intertechno
 
-Wird eine Intertechno-Fernbedienung oder ein Wandschalter gedrückt, erscheint der Code unter *Gefundene Geräte*. Übernommene Steckdosen lassen sich schalten, und ihr Zustand folgt auch der Fernbedienung. Läuft gleichzeitig Wireless M-Bus, initialisiert die Integration das 433-MHz-Modul nach dem Senden neu (a-culfw stellt den Empfang dann nicht selbst wieder her).
-Codes aus FHEM: `list TYPE=IT DEF` → z. B. `FFFF0F0FFF FF F0` = Code, Ein, Aus. Manuell hinzufügen und Ein-/Aus-Codes ändern unter **Konfigurieren**.
+Wird eine Intertechno-Fernbedienung oder ein Wandschalter gedrückt, erscheint der Code unter *Gefundene Geräte*. Übernommene Steckdosen lassen sich schalten, und ihr Zustand folgt auch der Fernbedienung.
+Codes aus FHEM: `list TYPE=IT DEF` → z. B. `FFFF00FFFF 0F F0` = Code, Ein, Aus. **Ohne Angabe gilt Ein = `FF`, Aus = `F0`** – Elro/PT2262-artige Steckdosen brauchen oft `0F` als Ein. Manuell hinzufügen und Ein-/Aus-Codes ändern unter **Konfigurieren**; jeder Schalter zeigt in den Attributen `befehl_ein`, `befehl_aus` und `sendemodul`. Sendet die Fernbedienung eine nicht eingetragene Endung, steht einmalig ein Hinweis im Log.
+
+**Sendemodul** (Konfigurieren → Einstellungen → „Intertechno senden über“): Vorgabe *Automatisch* sendet wie FHEM (IODev = wMBus-Modul) über das Wireless-M-Bus-Modul. a-culfw (`intertechno.c`, `change_RF_mode`/`restore_RF_mode`) stellt dort nach dem Senden den wMBus-Modus selbst wieder her, das 433-MHz-Modul wird nicht angefasst und empfängt weiter. Am Gerät gemessen (2026-11-15, Modul 3 im S-Modus): Stehlampe 30/30, Modellbahn 6/6, Modul 2 empfing währenddessen jedes Signal, wMBus-Telegramme kamen weiter. Wahlweise über das 433-MHz-Modul – dann initialisiert die Integration es danach neu (wMBus kurz aus), weil `set_txrestore` bei aktivem wMBus nichts tut. Module mit Rolle „Aus“ werden nie angeboten: `restore_RF_mode` → `set_RF_mode(off)` setzt `mbus_mode = WMBUS_NONE` und beendet den wMBus-Empfang auf allen Modulen.
 
 ## Technisches
 

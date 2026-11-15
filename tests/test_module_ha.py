@@ -82,22 +82,23 @@ async def test_settings_only_for_433_module(hass: HomeAssistant, mods, firmware)
     assert reg.async_get_entity_id("number", DOMAIN, f"{entry.entry_id}_set_freq_1") is None
     assert reg.async_get_entity_id("select", DOMAIN, f"{entry.entry_id}_set_bwidth_1") is None
     assert reg.async_get_entity_id("select", DOMAIN, f"{entry.entry_id}_set_patable_1") is None
-    for uid in ("set_freq_2", "set_itclock_2"):
-        ent = reg.async_get(reg.async_get_entity_id("number", DOMAIN, f"{entry.entry_id}_{uid}"))
-        assert ent.disabled_by == er.RegistryEntryDisabler.INTEGRATION and ent.entity_category == "config"
-    for uid in ("set_bwidth_2", "set_rampl_2", "set_sens_2", "set_led_1"):
+    ent = reg.async_get(reg.async_get_entity_id("number", DOMAIN, f"{entry.entry_id}_set_freq_2"))
+    assert ent.disabled_by == er.RegistryEntryDisabler.INTEGRATION and ent.entity_category == "config"
+    for uid in ("set_bwidth_2", "set_rampl_2", "set_sens_2"):
         ent = reg.async_get(reg.async_get_entity_id("select", DOMAIN, f"{entry.entry_id}_{uid}"))
         assert ent.disabled_by == er.RegistryEntryDisabler.INTEGRATION
-    assert reg.async_get_entity_id("select", DOMAIN, f"{entry.entry_id}_set_patable_2") is None
+    # Werte, die die Firmware nicht zurückmeldet, gibt es nicht als Entität (blieben leer)
+    assert reg.async_get_entity_id("number", DOMAIN, f"{entry.entry_id}_set_itclock_2") is None
+    for uid in ("set_patable_1", "set_patable_2", "set_led_1"):
+        assert reg.async_get_entity_id("select", DOMAIN, f"{entry.entry_id}_{uid}") is None
     await hass.config_entries.async_unload(entry.entry_id)
 
 
 async def test_write_settings_backup_first(hass: HomeAssistant, mods, firmware, caplog):
     """Nur auf Nutzeraktion; vor dem ersten Schreiben ccconf ins Log; danach X21 zum Laden."""
     caplog.set_level(logging.INFO, logger="custom_components.maplecun")
-    ents = [f"number.{P}_set_frequency_module_2", f"select.{P}_set_bandwidth_module_2",
-            f"select.{P}_set_amplification_module_2", f"select.{P}_set_sensitivity_module_2",
-            f"number.{P}_intertechno_clock_module_2"]
+    ents = [f"number.{P}_module_2_frequency", f"select.{P}_module_2_bandwidth",
+            f"select.{P}_module_2_amplification", f"select.{P}_module_2_sensitivity"]
     entry = await _setup(hass, mods, roles=("off", "rf433", "off", "off"), enable=ents)
     assert _writes(firmware) == []                          # Wiederherstellen schreibt nichts
     assert hass.states.get(ents[0]).state == "868.3"
@@ -121,16 +122,12 @@ async def test_write_settings_backup_first(hass: HomeAssistant, mods, firmware, 
     assert caplog.text.count("Sicherung vor dem Schreiben") == 1        # nur vor dem ersten Schreiben
     assert hass.states.get(ents[1]).state == "203"
     assert hass.states.get(ents[2]).state == "38" and hass.states.get(ents[3]).state == "8"
-
-    await hass.services.async_call("number", "set_value", {"entity_id": ents[4], "value": 300}, blocking=True)
-    await _settle(hass)
-    assert "ic300" in mods["2"].received
     await hass.config_entries.async_unload(entry.entry_id)
 
 
 async def test_write_while_wmbus_active_reloads(hass: HomeAssistant, mods, firmware, caplog):
     """Bei aktivem wMBus lädt X21 nichts – deshalb wMBus kurz aus, X21, wMBus wieder ein."""
-    ents = [f"select.{P}_set_sensitivity_module_2"]
+    ents = [f"select.{P}_module_2_sensitivity"]
     entry = await _setup(hass, mods, enable=ents)          # Modul 1 im T-Modus
     start = len(firmware.sent)
     await hass.services.async_call("select", "select_option", {"entity_id": ents[0], "option": "12"}, blocking=True)
@@ -145,19 +142,25 @@ async def test_write_while_wmbus_active_reloads(hass: HomeAssistant, mods, firmw
     await hass.config_entries.async_unload(entry.entry_id)
 
 
-async def test_patable_and_led_module_1(hass: HomeAssistant, mods, firmware):
-    ents = [f"select.{P}_transmit_power_module_1", f"select.{P}_led_module_1"]
-    entry = await _setup(hass, mods, roles=("rf433", "off", "off", "off"), enable=ents)
-    await hass.services.async_call("select", "select_option", {"entity_id": ents[0], "option": "07"}, blocking=True)
-    await hass.services.async_call("select", "select_option", {"entity_id": ents[1], "option": "blink"}, blocking=True)
-    await _settle(hass)
-    assert [c for _, c in _writes(firmware)] == ["x07", "l02"]
-    assert hass.states.get(ents[1]).state == "blink"
-    # nach dem Neuladen nur anzeigen, nicht erneut senden
-    await hass.config_entries.async_reload(entry.entry_id)
+async def test_orphaned_settings_removed(hass: HomeAssistant, mods, firmware):
+    """Einstellungen von Modulen mit Rolle "Aus" und entfallene Entitäten (ITClock, PA-Tabelle,
+    LED) werden aus der Registry entfernt – sonst "nicht verfügbar" ohne Namen."""
+    entry = MockConfigEntry(domain=DOMAIN, version=2, title="MapleCUN test", unique_id="127.0.0.1",
+        data={"host": "127.0.0.1", "modules": _modules(mods, ("off", "rf433", "wmbus_s", "off"))},
+        options={"init_mode": True, "meters": {}, "revolts": {}, "it_devices": {}})
+    entry.add_to_hass(hass)
+    reg = er.async_get(hass)
+    e = entry.entry_id
+    old = [("number", f"{e}_set_itclock_2"), ("number", f"{e}_set_freq_1"), ("select", f"{e}_set_led_1"),
+           ("select", f"{e}_set_patable_1"), ("select", f"{e}_set_bwidth_4"), ("button", f"{e}_reopen_1"),
+           ("binary_sensor", f"{e}_module_4")]
+    for domain, uid in old:
+        reg.async_get_or_create(domain, DOMAIN, uid, config_entry=entry, has_entity_name=True, original_name=None)
+    assert await hass.config_entries.async_setup(entry.entry_id)
     await _settle(hass, 0.6)
-    assert [c for _, c in _writes(firmware)] == ["x07", "l02"]
-    assert hass.states.get(ents[1]).state == "blink"
+    uids = {x.unique_id for x in er.async_entries_for_config_entry(reg, e)}
+    assert not uids & {uid for _, uid in old}
+    assert {f"{e}_set_freq_2", f"{e}_set_bwidth_2", f"{e}_reopen_2", f"{e}_reopen_3", f"{e}_module_3"} <= uids
     await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -186,7 +189,7 @@ async def test_reopen_button(hass: HomeAssistant, mods, firmware, monkeypatch):
     from custom_components.maplecun import hub as hub_mod
     monkeypatch.setattr(hub_mod, "RECONNECT_DELAY", 0.1)
     entry = await _setup(hass, mods)
-    await hass.services.async_call("button", "press", {"entity_id": f"button.{P}_reconnect_module_1"}, blocking=True)
+    await hass.services.async_call("button", "press", {"entity_id": f"button.{P}_module_1_reconnect"}, blocking=True)
     await _settle(hass, 1.0)
     assert mods["1"].received.count("brt") == 2 and firmware.mode[0] == "wmbus_t"
     await hass.config_entries.async_unload(entry.entry_id)

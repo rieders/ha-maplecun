@@ -15,6 +15,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MapleCunConfigEntry
 from .const import CONF_SENSORS, DOMAIN, ROLE_RF433, signal_climate, signal_connection
+from .devices import remove_orphans
 from .naming import with_fallback_name
 
 
@@ -31,6 +32,10 @@ async def async_setup_entry(
 
         for key, cfg in entry.options.get(CONF_SENSORS, {}).items():
             entities.append(ClimateBattery(entry, key, cfg, climate_device(entry, key, cfg)))
+    expected = {e.unique_id for e in entities}
+    if not rf:              # Thermometer-Einträge behalten, solange kein 433-MHz-Modul eingerichtet ist
+        expected |= {f"{entry.entry_id}_climate_{key}_battery" for key in entry.options.get(CONF_SENSORS, {})}
+    remove_orphans(hass, entry, "binary_sensor", expected)
     async_add_entities(entities)
 
 

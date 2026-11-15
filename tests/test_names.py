@@ -165,3 +165,26 @@ async def test_stale_registry_entries_removed(hass: HomeAssistant, mods, caplog)
     assert kept is not None and kept.original_name == "Raw data module 1"
     assert kept.translation_key == "last_raw_1"
     await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_module_settings_named_with_module_number(hass: HomeAssistant, mods):
+    """Zusatz 4: jede Einstellung heißt "Modul N …" (Sprache von HA), Entitäts-ID bleibt englisch;
+    kein Eintrag für Module mit Rolle "Aus"."""
+    hass.config.language = "de"
+    entry = _entry(hass, mods, meters=(), roles=("off", "rf433", "wmbus_s", "off"))
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await _settle(hass, 0.6)
+    ent_reg = er.async_get(hass)
+    names = {e.entity_id: e.original_name for e in er.async_entries_for_config_entry(ent_reg, entry.entry_id)
+             if e.domain in ("number", "select", "button")}
+    assert names == {
+        "number.maplecun_test_module_2_frequency": "Modul 2 Frequenz",
+        "select.maplecun_test_module_2_bandwidth": "Modul 2 Bandbreite",
+        "select.maplecun_test_module_2_amplification": "Modul 2 Verstärkung",
+        "select.maplecun_test_module_2_sensitivity": "Modul 2 Empfindlichkeit",
+        "button.maplecun_test_refresh_module_values": "Modulwerte aktualisieren",
+        "button.maplecun_test_module_2_reconnect": "Modul 2 neu verbinden",
+        "button.maplecun_test_module_3_reconnect": "Modul 3 neu verbinden",
+    }
+    assert len(set(names.values())) == len(names)                 # eindeutig
+    await hass.config_entries.async_unload(entry.entry_id)

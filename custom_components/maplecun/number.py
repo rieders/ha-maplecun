@@ -1,7 +1,9 @@
-"""Einstellungen als Zahl: Frequenz (EEPROM) und Intertechno-Pulslänge (RAM).
+"""Einstellung als Zahl: Frequenz (EEPROM), wie FHEM "set freq".
 
-Wie FHEM "set freq" / "set ITClock"; nur im 433-MHz-Betrieb, standardmäßig deaktiviert,
-geschrieben wird ausschließlich nach einer Nutzeraktion (nie beim Start).
+Nur im 433-MHz-Betrieb, standardmäßig deaktiviert, geschrieben wird ausschließlich nach einer
+Nutzeraktion (nie beim Start). Die Intertechno-Pulslänge ("ic", FHEM "set ITClock") gibt es
+nicht mehr als Entität: a-culfw meldet den Wert nicht zurück, die Zahl blieb leer. Setzen
+weiterhin über die Aktion maplecun.send_raw (z. B. "ic250").
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ from homeassistant.components.number import (
     NumberMode,
     RestoreNumber,
 )
-from homeassistant.const import EntityCategory, UnitOfFrequency, UnitOfTime
+from homeassistant.const import EntityCategory, UnitOfFrequency
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -21,6 +23,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MapleCunConfigEntry
 from .const import DOMAIN, ROLE_RF433, signal_connection, signal_module_info
+from .devices import remove_orphans
 from .naming import with_fallback_name
 
 
@@ -34,9 +37,10 @@ async def async_setup_entry(
     for mid, mod in sorted(hub.modules.items()):
         if mod.role != ROLE_RF433:
             continue              # wMBus: Firmware lädt eigene Funkeinstellungen
+        if mod.cmds and "W" not in mod.cmds:
+            continue              # ohne EEPROM-Schreiben nie verfügbar
         entities.append(FreqNumber(entry, mid))
-        if not mod.cmds or "i" in mod.cmds:
-            entities.append(ITClockNumber(entry, mid))
+    remove_orphans(hass, entry, "number", {e.unique_id for e in entities})
     async_add_entities(entities)
 
 
@@ -99,32 +103,3 @@ class FreqNumber(_Base):
             await self._hub.async_write_radio(self._mid, "freq", value)
         except (ValueError, ConnectionError, OSError) as err:
             raise HomeAssistantError(str(err)) from err
-
-
-class ITClockNumber(_Base):
-    """Intertechno-Pulslänge in µs ("ic", nur im RAM des MapleCUN; FHEM-Vorgabe 250)."""
-
-    _attr_translation_key = "set_itclock"
-    _attr_native_unit_of_measurement = UnitOfTime.MICROSECONDS
-    _attr_native_min_value = 100
-    _attr_native_max_value = 1000
-    _attr_native_step = 1
-
-    def __init__(self, entry, module_id: str) -> None:
-        super().__init__(entry, module_id)
-        self._attr_unique_id = f"{entry.entry_id}_set_itclock_{module_id}"
-        self._attr_native_value = None
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-        # Nur den zuletzt gesetzten Wert anzeigen – NICHT erneut senden
-        if (last := await self.async_get_last_number_data()) is not None:
-            self._attr_native_value = last.native_value
-
-    async def async_set_native_value(self, value: float) -> None:
-        try:
-            await self._hub.async_set_itclock(self._mid, int(value))
-        except (ValueError, ConnectionError, OSError) as err:
-            raise HomeAssistantError(str(err)) from err
-        self._attr_native_value = int(value)
-        self.async_write_ha_state()

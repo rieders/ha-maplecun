@@ -349,49 +349,23 @@
         "name": "Refresh module values"
       },
       "reopen": {
-        "name": "Reconnect module {module}"
+        "name": "Module {module} reconnect"
       }
     },
     "number": {
       "set_freq": {
-        "name": "Set frequency module {module}"
-      },
-      "set_itclock": {
-        "name": "Intertechno clock module {module}"
+        "name": "Module {module} frequency"
       }
     },
     "select": {
       "set_bwidth": {
-        "name": "Set bandwidth module {module}"
+        "name": "Module {module} bandwidth"
       },
       "set_rampl": {
-        "name": "Set amplification module {module}"
+        "name": "Module {module} amplification"
       },
       "set_sens": {
-        "name": "Set sensitivity module {module}"
-      },
-      "set_patable": {
-        "name": "Transmit power module {module}",
-        "state": {
-          "00": "-10 dBm (ramp)",
-          "01": "-5 dBm (ramp)",
-          "02": "0 dBm (ramp)",
-          "03": "5 dBm (ramp)",
-          "04": "10 dBm (ramp)",
-          "05": "-10 dBm",
-          "06": "-5 dBm",
-          "07": "0 dBm",
-          "08": "5 dBm",
-          "09": "10 dBm"
-        }
-      },
-      "set_led": {
-        "name": "LED module {module}",
-        "state": {
-          "off": "Off",
-          "on": "On",
-          "blink": "Blinking"
-        }
+        "name": "Module {module} sensitivity"
       }
     }
   },

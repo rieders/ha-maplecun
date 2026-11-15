@@ -354,44 +354,18 @@
     },
     "number": {
       "set_freq": {
-        "name": "Frequenz setzen Modul {module}"
-      },
-      "set_itclock": {
-        "name": "Intertechno-Takt Modul {module}"
+        "name": "Modul {module} Frequenz"
       }
     },
     "select": {
       "set_bwidth": {
-        "name": "Bandbreite setzen Modul {module}"
+        "name": "Modul {module} Bandbreite"
       },
       "set_rampl": {
-        "name": "Verstärkung setzen Modul {module}"
+        "name": "Modul {module} Verstärkung"
       },
       "set_sens": {
-        "name": "Empfindlichkeit setzen Modul {module}"
-      },
-      "set_patable": {
-        "name": "Sendeleistung Modul {module}",
-        "state": {
-          "00": "-10 dBm (Rampe)",
-          "01": "-5 dBm (Rampe)",
-          "02": "0 dBm (Rampe)",
-          "03": "5 dBm (Rampe)",
-          "04": "10 dBm (Rampe)",
-          "05": "-10 dBm",
-          "06": "-5 dBm",
-          "07": "0 dBm",
-          "08": "5 dBm",
-          "09": "10 dBm"
-        }
-      },
-      "set_led": {
-        "name": "LED Modul {module}",
-        "state": {
-          "off": "Aus",
-          "on": "An",
-          "blink": "Blinken"
-        }
+        "name": "Modul {module} Empfindlichkeit"
       }
     }
   },

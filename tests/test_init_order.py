@@ -83,7 +83,7 @@ async def test_reconnect_slowrf_while_wmbus_runs(hass: HomeAssistant, mods, firm
     entry = await _setup(hass, mods)
     firmware.chip[1] = "idle"                          # Modul 2 gestört
     start = len(firmware.sent)
-    await hass.services.async_call("button", "press", {"entity_id": "button.maplecun_test_reconnect_module_2"},
+    await hass.services.async_call("button", "press", {"entity_id": "button.maplecun_test_module_2_reconnect"},
                                    blocking=True)
     await _settle(hass, 6.5)                           # RECONNECT_DELAY = 5 s
     assert _order(firmware, start) == [(2, "brx"), (1, "X21"), (2, "X21"), (2, "brs")]

@@ -29,6 +29,7 @@ from .const import (
     ROLE_OFF,
     ROLE_RF433,
 )
+from . import naming
 from .hub import MapleCunHub
 
 _LOGGER = logging.getLogger(__name__)
@@ -148,6 +149,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MapleCunConfigEntry) -> 
         hass.config_entries.async_update_entry(entry, options={**entry.options, CONF_REVOLTS: revolts})
         hub.revolts = set(revolts)
 
+    naming.set_language(hass.config.language)       # Entitätsnamen (naming.py)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     return True

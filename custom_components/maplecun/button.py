@@ -10,6 +10,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MapleCunConfigEntry
 from .const import DOMAIN
+from .devices import remove_orphans
 from .naming import with_fallback_name
 
 
@@ -21,6 +22,7 @@ async def async_setup_entry(
     hub = entry.runtime_data
     entities: list[ButtonEntity] = [RefreshButton(entry)]
     entities.extend(ReopenButton(entry, mid) for mid in sorted(hub.modules))
+    remove_orphans(hass, entry, "button", {e.unique_id for e in entities})
     async_add_entities(entities)
 
 
